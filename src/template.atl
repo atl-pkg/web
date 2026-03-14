@@ -1,0 +1,266 @@
+// Template — server-side HTML rendering
+//
+// Lightweight HTMX-friendly templating. Logic lives in Atlas; templates are
+// pure string interpolation with loops, conditionals, and includes.
+//
+// Usage:
+//   import { render, Template } from 'web';
+//   const html = render("views/index.html", { title: "Home", items: [...] });
+
+export struct Template {
+    source: String,
+    partials: Map<String, String>,
+}
+
+// Render a template string with a context map.
+// Supports: {{ var }}, {% for x in list %}...{% end %}, {% if cond %}...{% end %}
+export fn render(source: String, ctx: Map<String, Any>) -> String {
+    const tmpl = Template { source, partials: {} };
+    return tmpl.render(ctx);
+}
+
+// Render a template file (relative to project root) with context.
+export fn render_file(path: String, ctx: Map<String, Any>) -> String {
+    const source = fs.read(path);
+    return render(source, ctx);
+}
+
+impl Template {
+    fn with_partial(self: own Template, name: String, source: String) -> Template {
+        self.partials[name] = source;
+        return self;
+    }
+
+    fn render(self: borrow Template, ctx: Map<String, Any>) -> String {
+        return eval_nodes(tokenize(self.source), ctx, self.partials);
+    }
+}
+
+// ── tokenizer ─────────────────────────────────────────────────────────────────
+
+enum TplToken {
+    Text(String),
+    Expr(String),        // {{ expression }}
+    ForOpen(String),     // {% for x in list %}
+    ForClose,            // {% end %} for a for block
+    IfOpen(String),      // {% if condition %}
+    ElseBlock,           // {% else %}
+    IfClose,             // {% end %} for an if block
+    Include(String),     // {% include "partial" %}
+}
+
+fn tokenize(source: String) -> Array<TplToken> {
+    var tokens: Array<TplToken> = [];
+    var pos = 0;
+    const len = source.length();
+
+    while pos < len {
+        const expr_open = source.index_of("{{", pos);
+        const block_open = source.index_of("{%", pos);
+
+        // Determine which delimiter comes first
+        const next_expr = if expr_open >= 0 { expr_open } else { len + 1 };
+        const next_block = if block_open >= 0 { block_open } else { len + 1 };
+
+        if next_expr < next_block && next_expr < len {
+            // Text before {{
+            if next_expr > pos {
+                tokens.push(TplToken.Text(source.slice(pos, next_expr)));
+            }
+            const close = source.index_of("}}", next_expr + 2);
+            if close < 0 {
+                tokens.push(TplToken.Text(source.slice(next_expr, len)));
+                pos = len;
+            } else {
+                const expr = source.slice(next_expr + 2, close).trim();
+                tokens.push(TplToken.Expr(expr));
+                pos = close + 2;
+            }
+        } else if next_block < len {
+            // Text before {%
+            if next_block > pos {
+                tokens.push(TplToken.Text(source.slice(pos, next_block)));
+            }
+            const close = source.index_of("%}", next_block + 2);
+            if close < 0 {
+                tokens.push(TplToken.Text(source.slice(next_block, len)));
+                pos = len;
+            } else {
+                const tag = source.slice(next_block + 2, close).trim();
+                tokens.push(parse_block_tag(tag));
+                pos = close + 2;
+            }
+        } else {
+            // Remaining text
+            tokens.push(TplToken.Text(source.slice(pos, len)));
+            pos = len;
+        }
+    }
+
+    return tokens;
+}
+
+fn parse_block_tag(tag: String) -> TplToken {
+    if tag == "end" {
+        return TplToken.ForClose;
+    }
+    if tag == "else" {
+        return TplToken.ElseBlock;
+    }
+    if tag.starts_with("for ") {
+        return TplToken.ForOpen(tag.slice(4, tag.length()).trim());
+    }
+    if tag.starts_with("if ") {
+        return TplToken.IfOpen(tag.slice(3, tag.length()).trim());
+    }
+    if tag.starts_with("include ") {
+        const name = tag.slice(8, tag.length()).trim().trim_matches('"');
+        return TplToken.Include(name);
+    }
+    return TplToken.Text(`{%${tag}%}`);
+}
+
+// ── evaluator ─────────────────────────────────────────────────────────────────
+
+fn eval_nodes(tokens: Array<TplToken>, ctx: Map<String, Any>, partials: Map<String, String>) -> String {
+    var output = "";
+    var i = 0;
+
+    while i < tokens.length() {
+        const token = tokens[i];
+        match token {
+            TplToken.Text(s) => output = output + s,
+            TplToken.Expr(expr) => output = output + resolve_expr(expr, ctx),
+            TplToken.ForOpen(spec) => {
+                const result = eval_for(tokens, i, spec, ctx, partials);
+                output = output + result.output;
+                i = result.next_pos;
+                continue;
+            },
+            TplToken.IfOpen(cond) => {
+                const result = eval_if(tokens, i, cond, ctx, partials);
+                output = output + result.output;
+                i = result.next_pos;
+                continue;
+            },
+            TplToken.Include(name) => {
+                const partial = partials[name];
+                match partial {
+                    Option.Some(src) => output = output + eval_nodes(tokenize(src), ctx, partials),
+                    Option.None => output = output + `[missing partial: ${name}]`,
+                }
+            },
+            _ => {},
+        }
+        i = i + 1;
+    }
+
+    return output;
+}
+
+struct EvalResult {
+    output: String,
+    next_pos: Int,
+}
+
+fn resolve_expr(expr: String, ctx: Map<String, Any>) -> String {
+    // Support dot notation: user.name
+    const parts = expr.split('.');
+    var value: Any = ctx;
+    for part in parts {
+        match value {
+            Map(m) => value = m[part].unwrap_or(""),
+            _ => return "",
+        }
+    }
+    return value.to_string();
+}
+
+fn eval_for(tokens: Array<TplToken>, start: Int, spec: String, ctx: Map<String, Any>, partials: Map<String, String>) -> EvalResult {
+    // Parse "x in list"
+    const in_idx = spec.index_of(" in ");
+    if in_idx < 0 {
+        return EvalResult { output: "", next_pos: start + 1 };
+    }
+    const var_name = spec.slice(0, in_idx).trim();
+    const list_name = spec.slice(in_idx + 4, spec.length()).trim();
+
+    // Collect body tokens until matching ForClose
+    var body: Array<TplToken> = [];
+    var depth = 1;
+    var i = start + 1;
+    while i < tokens.length() && depth > 0 {
+        match tokens[i] {
+            TplToken.ForOpen(_) => { depth = depth + 1; body.push(tokens[i]); },
+            TplToken.IfOpen(_) => { depth = depth + 1; body.push(tokens[i]); },
+            TplToken.ForClose => {
+                depth = depth - 1;
+                if depth > 0 { body.push(tokens[i]); }
+            },
+            _ => body.push(tokens[i]),
+        }
+        i = i + 1;
+    }
+
+    // Render body for each item in list
+    var output = "";
+    const list = ctx[list_name];
+    match list {
+        Option.Some(Array(items)) => {
+            for item in items {
+                var item_ctx = ctx.clone();
+                item_ctx[var_name] = item;
+                output = output + eval_nodes(body, item_ctx, partials);
+            }
+        },
+        _ => {},
+    }
+
+    return EvalResult { output, next_pos: i };
+}
+
+fn eval_if(tokens: Array<TplToken>, start: Int, cond: String, ctx: Map<String, Any>, partials: Map<String, String>) -> EvalResult {
+    var then_body: Array<TplToken> = [];
+    var else_body: Array<TplToken> = [];
+    var in_else = false;
+    var depth = 1;
+    var i = start + 1;
+
+    while i < tokens.length() && depth > 0 {
+        match tokens[i] {
+            TplToken.ForOpen(_) => { depth = depth + 1; if in_else { else_body.push(tokens[i]); } else { then_body.push(tokens[i]); } },
+            TplToken.IfOpen(_) => { depth = depth + 1; if in_else { else_body.push(tokens[i]); } else { then_body.push(tokens[i]); } },
+            TplToken.ElseBlock => { if depth == 1 { in_else = true; } },
+            TplToken.ForClose => {
+                depth = depth - 1;
+                if depth > 0 { if in_else { else_body.push(tokens[i]); } else { then_body.push(tokens[i]); } }
+            },
+            _ => {
+                if in_else { else_body.push(tokens[i]); } else { then_body.push(tokens[i]); }
+            },
+        }
+        i = i + 1;
+    }
+
+    const condition = eval_condition(cond, ctx);
+    const output = if condition {
+        eval_nodes(then_body, ctx, partials)
+    } else {
+        eval_nodes(else_body, ctx, partials)
+    };
+
+    return EvalResult { output, next_pos: i };
+}
+
+fn eval_condition(cond: String, ctx: Map<String, Any>) -> Bool {
+    // Simple: check if a context variable is truthy
+    const value = ctx[cond];
+    match value {
+        Option.None => return false,
+        Option.Some(Bool(b)) => return b,
+        Option.Some(String(s)) => return s.length() > 0,
+        Option.Some(Int(n)) => return n != 0,
+        Option.Some(Array(a)) => return a.length() > 0,
+        _ => return true,
+    }
+}

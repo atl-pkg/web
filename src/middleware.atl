@@ -1,0 +1,140 @@
+// Middleware — composable request/response pipeline
+//
+// Usage:
+//   import { chain, logger, cors, json_body } from 'web';
+//   const stack = chain([logger(), cors("*"), json_body()]);
+//   http.serve(3000, stack(router.handle));
+
+export type Handler = fn(Request, Response) -> Response;
+export type Middleware = fn(Handler) -> Handler;
+
+// Compose a list of middleware around a final handler.
+// Middleware is applied left-to-right (first in list = outermost).
+export fn chain(middleware: Array<Middleware>, handler: Handler) -> Handler {
+    var h = handler;
+    var i = middleware.length() - 1;
+    while i >= 0 {
+        h = middleware[i](h);
+        i = i - 1;
+    }
+    return h;
+}
+
+// ── built-in middleware ───────────────────────────────────────────────────────
+
+// Request/response logger. Prints method, path, status, duration.
+export fn logger() -> Middleware {
+    return fn(next: Handler) -> Handler {
+        return fn(req: Request, res: Response) -> Response {
+            const start = time.now();
+            const result = next(req, res);
+            const duration = time.now() - start;
+            io.print(`${req.method} ${req.path} ${result.status} (${duration}ms)`);
+            return result;
+        };
+    };
+}
+
+// CORS headers. Pass "*" to allow all origins.
+export fn cors(origin: String) -> Middleware {
+    return fn(next: Handler) -> Handler {
+        return fn(req: Request, res: Response) -> Response {
+            // Handle preflight
+            if req.method == "OPTIONS" {
+                return res
+                    .status(204)
+                    .header("Access-Control-Allow-Origin", origin)
+                    .header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            }
+
+            const result = next(req, res);
+            return result.header("Access-Control-Allow-Origin", origin);
+        };
+    };
+}
+
+// Parse JSON body and attach to req.json.
+// If body is not valid JSON, returns 400 Bad Request.
+export fn json_body() -> Middleware {
+    return fn(next: Handler) -> Handler {
+        return fn(req: Request, res: Response) -> Response {
+            const ct = req.headers["content-type"];
+            if ct != Option.None && ct.unwrap().contains("application/json") {
+                const parsed = json.parse(req.body);
+                match parsed {
+                    Result.Err(_) => return res.status(400).text("Invalid JSON body"),
+                    Result.Ok(data) => req.json = Option.Some(data),
+                }
+            }
+            return next(req, res);
+        };
+    };
+}
+
+// Rate limiter — simple in-memory request counter per IP.
+// max_requests per window_ms milliseconds.
+export fn rate_limit(max_requests: Int, window_ms: Int) -> Middleware {
+    var counters: Map<String, Int> = {};
+    var window_start = time.now();
+
+    return fn(next: Handler) -> Handler {
+        return fn(req: Request, res: Response) -> Response {
+            const now = time.now();
+
+            // Reset window
+            if now - window_start > window_ms {
+                counters = {};
+                window_start = now;
+            }
+
+            const ip = req.headers["x-forwarded-for"].unwrap_or(req.remote_addr);
+            const count = counters[ip].unwrap_or(0) + 1;
+            counters[ip] = count;
+
+            if count > max_requests {
+                return res
+                    .status(429)
+                    .header("Retry-After", math.ceil(window_ms / 1000).to_string())
+                    .text("Too Many Requests");
+            }
+
+            return next(req, res);
+        };
+    };
+}
+
+// Basic auth middleware.
+export fn basic_auth(validate: fn(String, String) -> Bool) -> Middleware {
+    return fn(next: Handler) -> Handler {
+        return fn(req: Request, res: Response) -> Response {
+            const auth = req.headers["authorization"];
+            if auth == Option.None {
+                return res
+                    .status(401)
+                    .header("WWW-Authenticate", "Basic realm=\"Protected\"")
+                    .text("Unauthorized");
+            }
+
+            const parts = auth.unwrap().split(" ");
+            if parts.length() != 2 || parts[0] != "Basic" {
+                return res.status(400).text("Bad Authorization header");
+            }
+
+            const decoded = encoding.base64_decode(parts[1]);
+            const credentials = decoded.split(":");
+            if credentials.length() < 2 {
+                return res.status(400).text("Bad credentials format");
+            }
+
+            const username = credentials[0];
+            const password = credentials.slice(1, credentials.length()).join(":");
+
+            if !validate(username, password) {
+                return res.status(401).text("Invalid credentials");
+            }
+
+            return next(req, res);
+        };
+    };
+}

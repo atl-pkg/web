@@ -1,0 +1,107 @@
+// Router — path-based request routing with named params
+//
+// Usage:
+//   import { Router } from 'web';
+//   const router = new Router();
+//   router.get('/users/:id', (req, res) => { ... });
+//   http.serve(3000, router.handle);
+
+export struct RouteMatch {
+    params: Map<String, String>,
+    handler: fn(Request, Response) -> Response,
+}
+
+export struct Router {
+    routes: Array<Route>,
+}
+
+struct Route {
+    method: String,
+    pattern: String,
+    segments: Array<String>,
+    handler: fn(Request, Response) -> Response,
+}
+
+export fn new_router() -> Router {
+    return Router { routes: [] };
+}
+
+impl Router {
+    fn get(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+        return self.add_route("GET", pattern, handler);
+    }
+
+    fn post(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+        return self.add_route("POST", pattern, handler);
+    }
+
+    fn put(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+        return self.add_route("PUT", pattern, handler);
+    }
+
+    fn delete(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+        return self.add_route("DELETE", pattern, handler);
+    }
+
+    fn patch(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+        return self.add_route("PATCH", pattern, handler);
+    }
+
+    fn add_route(self: own Router, method: String, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+        const segments = split_pattern(pattern);
+        const route = Route {
+            method,
+            pattern,
+            segments,
+            handler,
+        };
+        self.routes.push(route);
+        return self;
+    }
+
+    fn match_route(self: borrow Router, method: String, path: String) -> Option<RouteMatch> {
+        for route in self.routes {
+            if route.method != method {
+                continue;
+            }
+            const result = match_pattern(route.segments, path);
+            match result {
+                Option.Some(params) => return Option.Some(RouteMatch { params, handler: route.handler }),
+                Option.None => continue,
+            }
+        }
+        return Option.None;
+    }
+}
+
+// Split a route pattern into segments: '/users/:id/posts' -> ['users', ':id', 'posts']
+fn split_pattern(pattern: String) -> Array<String> {
+    const parts = pattern.split('/');
+    return parts.filter(s => s.length() > 0);
+}
+
+// Match URL path against pattern segments, extracting named params.
+// Returns Option.Some(params) on match, Option.None on mismatch.
+fn match_pattern(segments: Array<String>, path: String) -> Option<Map<String, String>> {
+    const path_parts = path.split('/').filter(s => s.length() > 0);
+
+    if segments.length() != path_parts.length() {
+        return Option.None;
+    }
+
+    var params: Map<String, String> = {};
+
+    for i in 0..segments.length() {
+        const seg = segments[i];
+        const part = path_parts[i];
+
+        if seg.starts_with(':') {
+            const key = seg.slice(1, seg.length());
+            params[key] = part;
+        } else if seg != part {
+            return Option.None;
+        }
+    }
+
+    return Option.Some(params);
+}
