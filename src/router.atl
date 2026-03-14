@@ -7,66 +7,66 @@
 //   http.serve(3000, router.handle);
 
 export struct RouteMatch {
-    params: Map<String, String>,
-    handler: fn(Request, Response) -> Response,
+    params: Map<string, string>,
+    handler: any,
 }
 
 export struct Router {
-    routes: Array<Route>,
+    routes: Route[],
 }
 
 struct Route {
-    method: String,
-    pattern: String,
-    segments: Array<String>,
-    handler: fn(Request, Response) -> Response,
+    method: string,
+    pattern: string,
+    segments: string[],
+    handler: any,
 }
 
-export fn new_router() -> Router {
+export fn new_router(): Router {
     return Router { routes: [] };
 }
 
 impl Router {
-    fn get(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+    fn get(self, pattern: string, handler: any): Router {
         return self.add_route("GET", pattern, handler);
     }
 
-    fn post(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+    fn post(self, pattern: string, handler: any): Router {
         return self.add_route("POST", pattern, handler);
     }
 
-    fn put(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+    fn put(self, pattern: string, handler: any): Router {
         return self.add_route("PUT", pattern, handler);
     }
 
-    fn delete(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+    fn delete(self, pattern: string, handler: any): Router {
         return self.add_route("DELETE", pattern, handler);
     }
 
-    fn patch(self: own Router, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
+    fn patch(self, pattern: string, handler: any): Router {
         return self.add_route("PATCH", pattern, handler);
     }
 
-    fn add_route(self: own Router, method: String, pattern: String, handler: fn(Request, Response) -> Response) -> Router {
-        const segments = split_pattern(pattern);
-        const route = Route {
-            method,
-            pattern,
-            segments,
-            handler,
+    fn add_route(self, method: string, pattern: string, handler: any): Router {
+        let segments = split_pattern(pattern);
+        let route = Route {
+            method: method,
+            pattern: pattern,
+            segments: segments,
+            handler: handler,
         };
         self.routes.push(route);
         return self;
     }
 
-    fn match_route(self: borrow Router, method: String, path: String) -> Option<RouteMatch> {
+    fn match_route(self, method: string, path: string): Option<RouteMatch> {
         for route in self.routes {
             if route.method != method {
                 continue;
             }
-            const result = match_pattern(route.segments, path);
+            let result = match_pattern(route.segments, path);
             match result {
-                Option.Some(params) => return Option.Some(RouteMatch { params, handler: route.handler }),
+                Option.Some(params) => { return Option.Some(RouteMatch { params: params, handler: route.handler }); },
                 Option.None => continue,
             }
         }
@@ -75,28 +75,28 @@ impl Router {
 }
 
 // Split a route pattern into segments: '/users/:id/posts' -> ['users', ':id', 'posts']
-fn split_pattern(pattern: String) -> Array<String> {
-    const parts = pattern.split('/');
-    return parts.filter(s => s.length() > 0);
+fn split_pattern(pattern: string): string[] {
+    let parts = pattern.split("/");
+    return parts.filter(fn(s: string): bool { return s.length() > 0; });
 }
 
 // Match URL path against pattern segments, extracting named params.
 // Returns Option.Some(params) on match, Option.None on mismatch.
-fn match_pattern(segments: Array<String>, path: String) -> Option<Map<String, String>> {
-    const path_parts = path.split('/').filter(s => s.length() > 0);
+fn match_pattern(segments: string[], path: string): Option<Map<string, string>> {
+    let path_parts = path.split("/").filter(fn(s: string): bool { return s.length() > 0; });
 
     if segments.length() != path_parts.length() {
         return Option.None;
     }
 
-    var params: Map<String, String> = {};
+    let mut params: Map<string, string> = {};
 
     for i in 0..segments.length() {
-        const seg = segments[i];
-        const part = path_parts[i];
+        let seg = segments[i];
+        let part = path_parts[i];
 
-        if seg.starts_with(':') {
-            const key = seg.slice(1, seg.length());
+        if seg.starts_with(":") {
+            let key = seg.slice(1, seg.length());
             params[key] = part;
         } else if seg != part {
             return Option.None;

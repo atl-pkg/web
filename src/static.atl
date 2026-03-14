@@ -7,55 +7,58 @@
 // Or mount at a prefix with a router:
 //   router.get('/assets/*', static_files("./public"));
 
-const MIME_TYPES: Map<String, String> = {
-    "html":  "text/html; charset=utf-8",
-    "css":   "text/css; charset=utf-8",
-    "js":    "application/javascript; charset=utf-8",
-    "json":  "application/json",
-    "png":   "image/png",
-    "jpg":   "image/jpeg",
-    "jpeg":  "image/jpeg",
-    "gif":   "image/gif",
-    "svg":   "image/svg+xml",
-    "ico":   "image/x-icon",
-    "woff":  "font/woff",
-    "woff2": "font/woff2",
-    "ttf":   "font/ttf",
-    "pdf":   "application/pdf",
-    "txt":   "text/plain; charset=utf-8",
-    "xml":   "application/xml",
-    "mp4":   "video/mp4",
-    "webm":  "video/webm",
-    "mp3":   "audio/mpeg",
-    "wav":   "audio/wav",
-};
+fn mime_for_ext(ext: string): string {
+    match ext {
+        "html"  => "text/html; charset=utf-8",
+        "css"   => "text/css; charset=utf-8",
+        "js"    => "application/javascript; charset=utf-8",
+        "json"  => "application/json",
+        "png"   => "image/png",
+        "jpg"   => "image/jpeg",
+        "jpeg"  => "image/jpeg",
+        "gif"   => "image/gif",
+        "svg"   => "image/svg+xml",
+        "ico"   => "image/x-icon",
+        "woff"  => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf"   => "font/ttf",
+        "pdf"   => "application/pdf",
+        "txt"   => "text/plain; charset=utf-8",
+        "xml"   => "application/xml",
+        "mp4"   => "video/mp4",
+        "webm"  => "video/webm",
+        "mp3"   => "audio/mpeg",
+        "wav"   => "audio/wav",
+        _       => "application/octet-stream",
+    }
+}
 
 // Returns a handler that serves files from `root_dir`.
 // Appends index.html for directory requests.
-export fn static_files(root_dir: String) -> fn(Request, Response) -> Response {
-    return fn(req: Request, res: Response) -> Response {
+export fn static_files(root_dir: string): any {
+    return fn(req: any, res: any): any {
         if req.method != "GET" && req.method != "HEAD" {
             return res.status(405).text("Method Not Allowed");
         }
 
-        const safe_path = sanitize_path(req.path);
-        var file_path = root_dir + "/" + safe_path;
+        let safe_path = sanitize_path(req.path);
+        let mut file_path = root_dir + "/" + safe_path;
 
         // Serve index.html for directory requests
-        if file_path.ends_with('/') || !file_path.contains('.') {
-            file_path = file_path.trim_end_matches('/') + "/index.html";
+        if file_path.ends_with("/") || !file_path.contains(".") {
+            file_path = file_path.trim_end_matches("/") + "/index.html";
         }
 
         if !fs.exists(file_path) {
             return res.status(404).text("Not Found");
         }
 
-        const ext = path_extension(file_path);
-        const mime = MIME_TYPES[ext].unwrap_or("application/octet-stream");
+        let ext = path_extension(file_path);
+        let mime = mime_for_ext(ext);
 
-        const content = fs.read_bytes(file_path);
+        let content = fs.read_bytes(file_path);
         match content {
-            Result.Err(_) => return res.status(500).text("Internal Server Error"),
+            Result.Err(_) => { return res.status(500).text("Internal Server Error"); },
             Result.Ok(bytes) => {
                 return res
                     .status(200)
@@ -68,16 +71,16 @@ export fn static_files(root_dir: String) -> fn(Request, Response) -> Response {
 }
 
 // Prevent path traversal: strip leading /, normalize ..
-fn sanitize_path(path: String) -> String {
-    const clean = path.trim_start_matches('/');
-    const parts = clean.split('/').filter(p => p != ".." && p != ".");
-    return parts.join('/');
+fn sanitize_path(req_path: string): string {
+    let clean = req_path.trim_start_matches("/");
+    let parts = clean.split("/").filter(fn(p: string): bool { return p != ".." && p != "."; });
+    return parts.join("/");
 }
 
-fn path_extension(path: String) -> String {
-    const dot = path.last_index_of('.');
+fn path_extension(file_path: string): string {
+    let dot = file_path.last_index_of(".");
     if dot < 0 {
         return "";
     }
-    return path.slice(dot + 1, path.length()).to_lowercase();
+    return file_path.slice(dot + 1, file_path.length()).to_lowercase();
 }

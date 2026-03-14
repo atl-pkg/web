@@ -16,59 +16,59 @@
 
 export struct HtmxHelpers {}
 
-export const htmx = HtmxHelpers {};
+export let htmx = HtmxHelpers {};
 
 impl HtmxHelpers {
     // True when the request came from HTMX (HX-Request header present).
-    fn is_htmx(self: borrow HtmxHelpers, req: Request) -> Bool {
+    fn is_htmx(self, req: any): any {
         return req.headers["hx-request"] == Option.Some("true");
     }
 
     // Return an HTML partial response (200, text/html).
-    fn partial(self: borrow HtmxHelpers, res: Response, html: String) -> Response {
+    fn partial(self, res: any, html: string): any {
         return res.status(200).header("Content-Type", "text/html; charset=utf-8").body(html);
     }
 
     // Client-side redirect via HX-Redirect header.
-    fn redirect(self: borrow HtmxHelpers, res: Response, url: String) -> Response {
+    fn redirect(self, res: any, url: string): any {
         return res.status(200).header("HX-Redirect", url);
     }
 
     // Full-page refresh via HX-Refresh.
-    fn refresh(self: borrow HtmxHelpers, res: Response) -> Response {
+    fn refresh(self, res: any): any {
         return res.status(200).header("HX-Refresh", "true");
     }
 
     // Push a new URL into browser history via HX-Push-Url.
-    fn push_url(self: borrow HtmxHelpers, res: Response, url: String) -> Response {
+    fn push_url(self, res: any, url: string): any {
         return res.header("HX-Push-Url", url);
     }
 
     // Replace the current URL without a history entry via HX-Replace-Url.
-    fn replace_url(self: borrow HtmxHelpers, res: Response, url: String) -> Response {
+    fn replace_url(self, res: any, url: string): any {
         return res.header("HX-Replace-Url", url);
     }
 
     // Trigger a client-side event via HX-Trigger.
     // event_name: simple string or JSON for multiple events.
-    fn trigger(self: borrow HtmxHelpers, res: Response, event_name: String) -> Response {
+    fn trigger(self, res: any, event_name: string): any {
         return res.header("HX-Trigger", event_name);
     }
 
     // Trigger events after settlement (DOM swap complete).
-    fn trigger_after_settle(self: borrow HtmxHelpers, res: Response, event_name: String) -> Response {
+    fn trigger_after_settle(self, res: any, event_name: string): any {
         return res.header("HX-Trigger-After-Settle", event_name);
     }
 
     // Trigger events after swap + transition completion.
-    fn trigger_after_swap(self: borrow HtmxHelpers, res: Response, event_name: String) -> Response {
+    fn trigger_after_swap(self, res: any, event_name: string): any {
         return res.header("HX-Trigger-After-Swap", event_name);
     }
 
     // Out-of-band swap: render multiple targets in one response.
     // Appends hx-swap-oob="true" fragments to the main response body.
-    fn oob(self: borrow HtmxHelpers, main: String, fragments: Array<String>) -> String {
-        var output = main;
+    fn oob(self, main: string, fragments: string[]): string {
+        let mut output = main;
         for frag in fragments {
             output = output + "\n" + frag;
         }
@@ -76,32 +76,32 @@ impl HtmxHelpers {
     }
 
     // Retarget the swap to a different element via HX-Retarget.
-    fn retarget(self: borrow HtmxHelpers, res: Response, selector: String) -> Response {
+    fn retarget(self, res: any, selector: string): any {
         return res.header("HX-Retarget", selector);
     }
 
     // Reselect which part of the response to swap via HX-Reselect.
-    fn reselect(self: borrow HtmxHelpers, res: Response, selector: String) -> Response {
+    fn reselect(self, res: any, selector: string): any {
         return res.header("HX-Reselect", selector);
     }
 
     // Stop polling by returning HTTP 286.
-    fn stop_polling(self: borrow HtmxHelpers, res: Response) -> Response {
+    fn stop_polling(self, res: any): any {
         return res.status(286);
     }
 
     // Return the boosted target URL from HX-Current-URL header.
-    fn current_url(self: borrow HtmxHelpers, req: Request) -> Option<String> {
+    fn current_url(self, req: any): any {
         return req.headers["hx-current-url"];
     }
 
     // Return the element id that triggered the request (HX-Trigger header).
-    fn trigger_id(self: borrow HtmxHelpers, req: Request) -> Option<String> {
+    fn trigger_id(self, req: any): any {
         return req.headers["hx-trigger"];
     }
 
     // Return the target element id (HX-Target header).
-    fn target(self: borrow HtmxHelpers, req: Request) -> Option<String> {
+    fn target(self, req: any): any {
         return req.headers["hx-target"];
     }
 }

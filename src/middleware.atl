@@ -5,14 +5,14 @@
 //   const stack = chain([logger(), cors("*"), json_body()]);
 //   http.serve(3000, stack(router.handle));
 
-export type Handler = fn(Request, Response) -> Response;
-export type Middleware = fn(Handler) -> Handler;
+export type Handler = any;
+export type Middleware = any;
 
 // Compose a list of middleware around a final handler.
 // Middleware is applied left-to-right (first in list = outermost).
-export fn chain(middleware: Array<Middleware>, handler: Handler) -> Handler {
-    var h = handler;
-    var i = middleware.length() - 1;
+export fn chain(middleware: Middleware[], handler: Handler): Handler {
+    let mut h = handler;
+    let mut i = middleware.length() - 1;
     while i >= 0 {
         h = middleware[i](h);
         i = i - 1;
@@ -23,12 +23,12 @@ export fn chain(middleware: Array<Middleware>, handler: Handler) -> Handler {
 // ── built-in middleware ───────────────────────────────────────────────────────
 
 // Request/response logger. Prints method, path, status, duration.
-export fn logger() -> Middleware {
-    return fn(next: Handler) -> Handler {
-        return fn(req: Request, res: Response) -> Response {
-            const start = time.now();
-            const result = next(req, res);
-            const duration = time.now() - start;
+export fn logger(): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: any, res: any): any {
+            let start = time.now();
+            let result = next(req, res);
+            let duration = time.now() - start;
             io.print(`${req.method} ${req.path} ${result.status} (${duration}ms)`);
             return result;
         };
@@ -36,9 +36,9 @@ export fn logger() -> Middleware {
 }
 
 // CORS headers. Pass "*" to allow all origins.
-export fn cors(origin: String) -> Middleware {
-    return fn(next: Handler) -> Handler {
-        return fn(req: Request, res: Response) -> Response {
+export fn cors(origin: string): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: any, res: any): any {
             // Handle preflight
             if req.method == "OPTIONS" {
                 return res
@@ -48,7 +48,7 @@ export fn cors(origin: String) -> Middleware {
                     .header("Access-Control-Allow-Headers", "Content-Type, Authorization");
             }
 
-            const result = next(req, res);
+            let result = next(req, res);
             return result.header("Access-Control-Allow-Origin", origin);
         };
     };
@@ -56,14 +56,14 @@ export fn cors(origin: String) -> Middleware {
 
 // Parse JSON body and attach to req.json.
 // If body is not valid JSON, returns 400 Bad Request.
-export fn json_body() -> Middleware {
-    return fn(next: Handler) -> Handler {
-        return fn(req: Request, res: Response) -> Response {
-            const ct = req.headers["content-type"];
+export fn json_body(): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: any, res: any): any {
+            let ct = req.headers["content-type"];
             if ct != Option.None && ct.unwrap().contains("application/json") {
-                const parsed = json.parse(req.body);
+                let parsed = json.parse(req.body);
                 match parsed {
-                    Result.Err(_) => return res.status(400).text("Invalid JSON body"),
+                    Result.Err(_) => { return res.status(400).text("Invalid JSON body"); },
                     Result.Ok(data) => req.json = Option.Some(data),
                 }
             }
@@ -74,13 +74,13 @@ export fn json_body() -> Middleware {
 
 // Rate limiter — simple in-memory request counter per IP.
 // max_requests per window_ms milliseconds.
-export fn rate_limit(max_requests: Int, window_ms: Int) -> Middleware {
-    var counters: Map<String, Int> = {};
-    var window_start = time.now();
+export fn rate_limit(max_requests: number, window_ms: number): Middleware {
+    let mut counters: Map<string,number> = {};
+    let mut window_start = time.now();
 
-    return fn(next: Handler) -> Handler {
-        return fn(req: Request, res: Response) -> Response {
-            const now = time.now();
+    return fn(next: Handler): Handler {
+        return fn(req: any, res: any): any {
+            let now = time.now();
 
             // Reset window
             if now - window_start > window_ms {
@@ -88,8 +88,8 @@ export fn rate_limit(max_requests: Int, window_ms: Int) -> Middleware {
                 window_start = now;
             }
 
-            const ip = req.headers["x-forwarded-for"].unwrap_or(req.remote_addr);
-            const count = counters[ip].unwrap_or(0) + 1;
+            let ip = req.headers["x-forwarded-for"].unwrap_or(req.remote_addr);
+            let count = counters[ip].unwrap_or(0) + 1;
             counters[ip] = count;
 
             if count > max_requests {
@@ -105,10 +105,10 @@ export fn rate_limit(max_requests: Int, window_ms: Int) -> Middleware {
 }
 
 // Basic auth middleware.
-export fn basic_auth(validate: fn(String, String) -> Bool) -> Middleware {
-    return fn(next: Handler) -> Handler {
-        return fn(req: Request, res: Response) -> Response {
-            const auth = req.headers["authorization"];
+export fn basic_auth(validate: any): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: any, res: any): any {
+            let auth = req.headers["authorization"];
             if auth == Option.None {
                 return res
                     .status(401)
@@ -116,19 +116,19 @@ export fn basic_auth(validate: fn(String, String) -> Bool) -> Middleware {
                     .text("Unauthorized");
             }
 
-            const parts = auth.unwrap().split(" ");
+            let parts = auth.unwrap().split(" ");
             if parts.length() != 2 || parts[0] != "Basic" {
                 return res.status(400).text("Bad Authorization header");
             }
 
-            const decoded = encoding.base64_decode(parts[1]);
-            const credentials = decoded.split(":");
+            let decoded = encoding.base64_decode(parts[1]);
+            let credentials = decoded.split(":");
             if credentials.length() < 2 {
                 return res.status(400).text("Bad credentials format");
             }
 
-            const username = credentials[0];
-            const password = credentials.slice(1, credentials.length()).join(":");
+            let username = credentials[0];
+            let password = credentials.slice(1, credentials.length()).join(":");
 
             if !validate(username, password) {
                 return res.status(401).text("Invalid credentials");
