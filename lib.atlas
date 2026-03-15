@@ -9,7 +9,7 @@
 // Handler signature: fn(req: any): any  (returns a response map)
 
 export { Router, RouteMatch } from "./src/router";
-export { chain, logger, cors, json_body, rate_limit, basic_auth } from "./src/middleware";
+export { chain, logger, cors, json_body, rate_limit, basic_auth, dev_errors } from "./src/middleware";
 export { render, render_file, Template } from "./src/template";
 export { static_files } from "./src/static";
 export { htmx, HtmxHelpers } from "./src/htmx";

@@ -48,7 +48,7 @@ export fn html(body: string): any {
 export fn json_resp(data: any): any {
     let mut h = new Map<string, string>();
     h.set("Content-Type", "application/json");
-    return response(200, json.stringify(data), h);
+    return response(200, Json.stringify(data).unwrap(), h);
 }
 
 // 200 OK — plain text with Content-Type: text/plain.

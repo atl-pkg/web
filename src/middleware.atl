@@ -132,6 +132,78 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
     };
 }
 
+// Dev error overlay middleware.
+// Intercepts 5xx responses and renders a dark-themed HTML error overlay.
+// HTMX-aware: if hx-request header is present, returns an OOB fragment
+// instead of a full page so the overlay appears inline without a full reload.
+//
+// Usage: chain([dev_errors(), logger(), cors("*")], dispatch)
+// Place FIRST in chain (outermost) so it wraps all other middleware.
+export fn dev_errors(): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: any): any {
+            let result = next(req);
+            if result.status >= 500 {
+                let is_htmx = req.headers["hx-request"] != None;
+                return _render_dev_error(req, result, is_htmx);
+            }
+            return result;
+        };
+    };
+}
+
+fn _escape_html(s: string): string {
+    let s1 = s.replace("&", "&amp;");
+    let s2 = s1.replace("<", "&lt;");
+    return s2.replace(">", "&gt;");
+}
+
+fn _render_dev_error(req: any, result: any, is_htmx: bool): any {
+    let error_body = _escape_html(result.body);
+    let escaped_path = _escape_html(req.path);
+
+    let overlay = `<style>
+#atlas-dev-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#1a1a2e;color:#e0e0e0;font-family:monospace;z-index:99999;overflow:auto;box-sizing:border-box;padding:2rem}
+#atlas-dev-overlay h1{color:#e74c3c;font-size:1.4rem;margin:0 0 1rem}
+#atlas-dev-overlay pre{background:#0d0d1a;border:1px solid #e74c3c;border-radius:4px;padding:1rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:#f8c291;font-size:.9rem;max-height:50vh}
+#atlas-dev-overlay table{border-collapse:collapse;width:100%;margin-top:1rem}
+#atlas-dev-overlay th,#atlas-dev-overlay td{border:1px solid #333;padding:.4rem .8rem;text-align:left;font-size:.85rem}
+#atlas-dev-overlay th{background:#0d0d1a;color:#aaa}
+#atlas-dev-overlay .dismiss{position:absolute;top:1rem;right:1.5rem;cursor:pointer;font-size:1.5rem;color:#aaa;background:none;border:none}
+#atlas-dev-overlay footer{margin-top:1.5rem;color:#555;font-size:.75rem}
+</style>
+<div id="atlas-dev-overlay">
+  <button class="dismiss" onclick="document.getElementById('atlas-dev-overlay').remove()">&#x2715;</button>
+  <h1>&#x26A0; Atlas Handler Error (${result.status})</h1>
+  <pre>${error_body}</pre>
+  <table>
+    <tr><th>Field</th><th>Value</th></tr>
+    <tr><td>Method</td><td>${req.method}</td></tr>
+    <tr><td>Path</td><td>${escaped_path}</td></tr>
+  </table>
+  <footer>dev_errors() middleware &mdash; remove from chain in production</footer>
+</div>`;
+
+    let mut h = new Map<string, string>();
+    h.set("Content-Type", "text/html");
+
+    if is_htmx {
+        let oob_fragment = `<div id="atlas-dev-overlay-oob" hx-swap-oob="true">${overlay}</div>`;
+        let mut m = new Map<string, any>();
+        m.set("status", 200);
+        m.set("body", oob_fragment);
+        m.set("headers", h);
+        return m;
+    }
+
+    let full_page = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Atlas Error</title></head><body style="margin:0">${overlay}</body></html>`;
+    let mut m = new Map<string, any>();
+    m.set("status", 500);
+    m.set("body", full_page);
+    m.set("headers", h);
+    return m;
+}
+
 // Basic auth middleware.
 export fn basic_auth(validate: any): Middleware {
     return fn(next: Handler): Handler {
