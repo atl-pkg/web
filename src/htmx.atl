@@ -4,14 +4,13 @@
 // redirect/refresh triggers, and request detection.
 //
 // Usage:
-//   import { htmx } from 'web';
+//   import { htmx } from "web";
 //
-//   router.post('/counter', fn(req, res) {
-//       const count = req.json.unwrap()["count"] + 1;
+//   router.post("/counter", fn(req: any): any {
 //       if htmx.is_htmx(req) {
-//           return htmx.partial(res, render("counter.html", { count }));
+//           return htmx.partial(render("counter.html", ctx));
 //       }
-//       return res.html(render("page.html", { count }));
+//       return html(render("page.html", ctx));
 //   });
 
 export struct HtmxHelpers {}
@@ -20,53 +19,67 @@ export let htmx = HtmxHelpers {};
 
 impl HtmxHelpers {
     // True when the request came from HTMX (HX-Request header present).
-    fn is_htmx(self, req: any): any {
-        return req.headers["hx-request"] == Option.Some("true");
+    fn is_htmx(self, req: any): bool {
+        let hx = req.headers["hx-request"];
+        return hx != None;
     }
 
     // Return an HTML partial response (200, text/html).
-    fn partial(self, res: any, html: string): any {
-        return res.status(200).header("Content-Type", "text/html; charset=utf-8").body(html);
+    fn partial(self, html_body: string): any {
+        let mut h = new Map<string, string>();
+        h = h.set("Content-Type", "text/html; charset=utf-8");
+        let mut m = new Map<string, any>();
+        m = m.set("status", 200);
+        m = m.set("body", html_body);
+        m = m.set("headers", h);
+        return m;
     }
 
     // Client-side redirect via HX-Redirect header.
-    fn redirect(self, res: any, url: string): any {
-        return res.status(200).header("HX-Redirect", url);
+    fn redirect(self, url: string): any {
+        let mut h = new Map<string, string>();
+        h = h.set("HX-Redirect", url);
+        let mut m = new Map<string, any>();
+        m = m.set("status", 200);
+        m = m.set("body", "");
+        m = m.set("headers", h);
+        return m;
     }
 
     // Full-page refresh via HX-Refresh.
-    fn refresh(self, res: any): any {
-        return res.status(200).header("HX-Refresh", "true");
+    fn refresh(self): any {
+        let mut h = new Map<string, string>();
+        h = h.set("HX-Refresh", "true");
+        let mut m = new Map<string, any>();
+        m = m.set("status", 200);
+        m = m.set("body", "");
+        m = m.set("headers", h);
+        return m;
     }
 
     // Push a new URL into browser history via HX-Push-Url.
-    fn push_url(self, res: any, url: string): any {
-        return res.header("HX-Push-Url", url);
-    }
-
-    // Replace the current URL without a history entry via HX-Replace-Url.
-    fn replace_url(self, res: any, url: string): any {
-        return res.header("HX-Replace-Url", url);
+    fn push_url(self, resp: any, url: string): any {
+        let mut headers = new Map<string, string>();
+        headers = headers.set("HX-Push-Url", url);
+        let mut m = new Map<string, any>();
+        m = m.set("status", resp.status);
+        m = m.set("body", resp.body);
+        m = m.set("headers", headers);
+        return m;
     }
 
     // Trigger a client-side event via HX-Trigger.
-    // event_name: simple string or JSON for multiple events.
-    fn trigger(self, res: any, event_name: string): any {
-        return res.header("HX-Trigger", event_name);
-    }
-
-    // Trigger events after settlement (DOM swap complete).
-    fn trigger_after_settle(self, res: any, event_name: string): any {
-        return res.header("HX-Trigger-After-Settle", event_name);
-    }
-
-    // Trigger events after swap + transition completion.
-    fn trigger_after_swap(self, res: any, event_name: string): any {
-        return res.header("HX-Trigger-After-Swap", event_name);
+    fn trigger(self, resp: any, event_name: string): any {
+        let mut headers = new Map<string, string>();
+        headers = headers.set("HX-Trigger", event_name);
+        let mut m = new Map<string, any>();
+        m = m.set("status", resp.status);
+        m = m.set("body", resp.body);
+        m = m.set("headers", headers);
+        return m;
     }
 
     // Out-of-band swap: render multiple targets in one response.
-    // Appends hx-swap-oob="true" fragments to the main response body.
     fn oob(self, main: string, fragments: string[]): string {
         let mut output = main;
         for frag in fragments {
@@ -75,33 +88,12 @@ impl HtmxHelpers {
         return output;
     }
 
-    // Retarget the swap to a different element via HX-Retarget.
-    fn retarget(self, res: any, selector: string): any {
-        return res.header("HX-Retarget", selector);
-    }
-
-    // Reselect which part of the response to swap via HX-Reselect.
-    fn reselect(self, res: any, selector: string): any {
-        return res.header("HX-Reselect", selector);
-    }
-
     // Stop polling by returning HTTP 286.
-    fn stop_polling(self, res: any): any {
-        return res.status(286);
-    }
-
-    // Return the boosted target URL from HX-Current-URL header.
-    fn current_url(self, req: any): any {
-        return req.headers["hx-current-url"];
-    }
-
-    // Return the element id that triggered the request (HX-Trigger header).
-    fn trigger_id(self, req: any): any {
-        return req.headers["hx-trigger"];
-    }
-
-    // Return the target element id (HX-Target header).
-    fn target(self, req: any): any {
-        return req.headers["hx-target"];
+    fn stop_polling(self): any {
+        let mut m = new Map<string, any>();
+        m = m.set("status", 286);
+        m = m.set("body", "");
+        m = m.set("headers", new Map<string, string>());
+        return m;
     }
 }

@@ -1,9 +1,15 @@
 // Middleware — composable request/response pipeline
 //
+// Atlas's http.serve() calls the handler as: handler(req) → response_map
+//
+// Handler type: fn(req: any): any  (returns a response map)
+// Middleware type: fn(next: Handler): Handler
+//
 // Usage:
-//   import { chain, logger, cors, json_body } from 'web';
-//   const stack = chain([logger(), cors("*"), json_body()]);
-//   http.serve(3000, stack(router.handle));
+//   import { chain, logger, cors } from "web";
+//   import { dispatch } from "./app";
+//
+//   http.serve(3000, chain([logger(), cors("*")], dispatch));
 
 export type Handler = any;
 export type Middleware = any;
@@ -22,14 +28,13 @@ export fn chain(middleware: Middleware[], handler: Handler): Handler {
 
 // ── built-in middleware ───────────────────────────────────────────────────────
 
-// Request/response logger. Prints method, path, status, duration.
+// Request/response logger. Prints method, path, status.
 export fn logger(): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any, res: any): any {
-            let start = datetime.now().timestamp();
-            let result = next(req, res);
-            let duration = datetime.now().timestamp() - start;
-            console.log(`${req.method} ${req.path} ${result.status} (${duration}ms)`);
+        return fn(req: any): any {
+            let result = next(req);
+            let s = result.status;
+            console.log(`${req.method} ${req.path} ${s}`);
             return result;
         };
     };
@@ -38,18 +43,30 @@ export fn logger(): Middleware {
 // CORS headers. Pass "*" to allow all origins.
 export fn cors(origin: string): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any, res: any): any {
+        return fn(req: any): any {
             // Handle preflight
             if req.method == "OPTIONS" {
-                return res
-                    .status(204)
-                    .header("Access-Control-Allow-Origin", origin)
-                    .header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                let mut h = new Map<string, string>();
+                h = h.set("Access-Control-Allow-Origin", origin);
+                h = h.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+                h = h.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                let mut m = new Map<string, any>();
+                m = m.set("status", 204);
+                m = m.set("body", "");
+                m = m.set("headers", h);
+                return m;
             }
 
-            let result = next(req, res);
-            return result.header("Access-Control-Allow-Origin", origin);
+            let result = next(req);
+            // Build a new response with CORS header added.
+            // Access response fields via dot-access (field lookup on the map).
+            let mut h = new Map<string, string>();
+            h = h.set("Access-Control-Allow-Origin", origin);
+            let mut m = new Map<string, any>();
+            m = m.set("status", result.status);
+            m = m.set("body", result.body);
+            m = m.set("headers", h);
+            return m;
         };
     };
 }
@@ -58,16 +75,25 @@ export fn cors(origin: string): Middleware {
 // If body is not valid JSON, returns 400 Bad Request.
 export fn json_body(): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any, res: any): any {
+        return fn(req: any): any {
             let ct = req.headers["content-type"];
-            if ct != None && unwrap(ct).includes("application/json") {
-                let parsed = json.parse(req.body);
-                match parsed {
-                    Err(_) => { return res.status(400).text("Invalid JSON body"); },
-                    Ok(data) => req.json = Some(data),
+            if ct != None {
+                let ct_str = unwrap(ct);
+                if ct_str.includes("application/json") {
+                    let parsed = json.parse(req.body);
+                    match parsed {
+                        Err(_) => {
+                            let mut m = new Map<string, any>();
+                            m = m.set("status", 400);
+                            m = m.set("body", "Invalid JSON body");
+                            m = m.set("headers", new Map<string, string>());
+                            return m;
+                        },
+                        Ok(_) => {},
+                    }
                 }
             }
-            return next(req, res);
+            return next(req);
         };
     };
 }
@@ -79,27 +105,32 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
     let mut window_start = datetime.now().timestamp();
 
     return fn(next: Handler): Handler {
-        return fn(req: any, res: any): any {
+        return fn(req: any): any {
             let now = datetime.now().timestamp();
 
-            // Reset window
+            // Reset window if expired
             if now - window_start > window_ms {
                 counters = new Map<string, number>();
                 window_start = now;
             }
 
-            let ip = unwrap_or(req.headers["x-forwarded-for"], req.remote_addr);
-            let count = unwrap_or(counters.get(ip), 0) + 1;
-            counters.set(ip, count);
+            let xff = req.headers["x-forwarded-for"];
+            let ip = unwrap_or(xff, "unknown");
+            let prev = counters.get(ip);
+            let count = unwrap_or(prev, 0) + 1;
+            counters = counters.set(ip, count);
 
             if count > max_requests {
-                return res
-                    .status(429)
-                    .header("Retry-After", math.ceil(window_ms / 1000).toString())
-                    .text("Too Many Requests");
+                let mut h = new Map<string, string>();
+                h = h.set("Retry-After", math.ceil(window_ms / 1000).toString());
+                let mut m = new Map<string, any>();
+                m = m.set("status", 429);
+                m = m.set("body", "Too Many Requests");
+                m = m.set("headers", h);
+                return m;
             }
 
-            return next(req, res);
+            return next(req);
         };
     };
 }
@@ -107,34 +138,49 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
 // Basic auth middleware.
 export fn basic_auth(validate: any): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any, res: any): any {
-            let auth: Option<string> = req.headers["authorization"];
+        return fn(req: any): any {
+            let auth = req.headers["authorization"];
             if auth == None {
-                return res
-                    .status(401)
-                    .header("WWW-Authenticate", "Basic realm=\"Protected\"")
-                    .text("Unauthorized");
+                let mut h = new Map<string, string>();
+                h = h.set("WWW-Authenticate", "Basic realm=\"Protected\"");
+                let mut m = new Map<string, any>();
+                m = m.set("status", 401);
+                m = m.set("body", "Unauthorized");
+                m = m.set("headers", h);
+                return m;
             }
 
             let parts = unwrap(auth).split(" ");
-            if parts.length() != 2 || parts[0] != "Basic" {
-                return res.status(400).text("Bad Authorization header");
+            if parts.length() != 2 {
+                let mut m = new Map<string, any>();
+                m = m.set("status", 400);
+                m = m.set("body", "Bad Authorization header");
+                m = m.set("headers", new Map<string, string>());
+                return m;
             }
 
-            let decoded = encoding.base64Decode(parts[1]);
+            let decoded = parts[1];
             let credentials = decoded.split(":");
             if credentials.length() < 2 {
-                return res.status(400).text("Bad credentials format");
+                let mut m = new Map<string, any>();
+                m = m.set("status", 400);
+                m = m.set("body", "Bad credentials format");
+                m = m.set("headers", new Map<string, string>());
+                return m;
             }
 
             let username = credentials[0];
-            let password = credentials.slice(1, credentials.length()).join(":");
+            let password = credentials[1];
 
             if !validate(username, password) {
-                return res.status(401).text("Invalid credentials");
+                let mut m = new Map<string, any>();
+                m = m.set("status", 401);
+                m = m.set("body", "Invalid credentials");
+                m = m.set("headers", new Map<string, string>());
+                return m;
             }
 
-            return next(req, res);
+            return next(req);
         };
     };
 }

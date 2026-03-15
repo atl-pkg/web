@@ -1,11 +1,11 @@
 // Static file serving
 //
 // Usage:
-//   import { static_files } from 'web';
+//   import { static_files } from "web";
 //   http.serve(3000, static_files("./public"));
 //
 // Or mount at a prefix with a router:
-//   router.get('/assets/*', static_files("./public"));
+//   router.get("/assets/*", static_files("./public"));
 
 fn mime_for_ext(ext: string): string {
     match ext {
@@ -33,38 +33,56 @@ fn mime_for_ext(ext: string): string {
     }
 }
 
+fn make_response(status: number, body: string, content_type: string): any {
+    let mut h = new Map<string, string>();
+    h = h.set("Content-Type", content_type);
+    let mut m = new Map<string, any>();
+    m = m.set("status", status);
+    m = m.set("body", body);
+    m = m.set("headers", h);
+    return m;
+}
+
+fn error_response(status: number, msg: string): any {
+    let mut m = new Map<string, any>();
+    m = m.set("status", status);
+    m = m.set("body", msg);
+    m = m.set("headers", new Map<string, string>());
+    return m;
+}
+
 // Returns a handler that serves files from `root_dir`.
 // Appends index.html for directory requests.
-export fn static_files(root_dir: string): any {
-    return fn(req: any, res: any): any {
-        if req.method != "GET" && req.method != "HEAD" {
-            return res.status(405).text("Method Not Allowed");
+export fn static_files(own root_dir: string): any {
+    return fn(req: any): any {
+        let method = `${req.method}`;
+        if method != "GET" && method != "HEAD" {
+            return error_response(405, "Method Not Allowed");
         }
 
-        let safe_path = sanitize_path(req.path);
+        let safe_path = sanitize_path(`${req.path}`);
         let mut file_path = root_dir + "/" + safe_path;
 
         // Serve index.html for directory requests
-        if file_path.ends_with("/") || !file_path.contains(".") {
-            file_path = file_path.trim_end_matches("/") + "/index.html";
+        if file_path.endsWith("/") || !file_path.includes(".") {
+            while file_path.endsWith("/") {
+                file_path = file_path.slice(0, file_path.length() - 1);
+            }
+            file_path = file_path + "/index.html";
         }
 
-        if !fs.exists(file_path) {
-            return res.status(404).text("Not Found");
+        if !file.exists(file_path) {
+            return error_response(404, "Not Found");
         }
 
         let ext = path_extension(file_path);
         let mime = mime_for_ext(ext);
 
-        let content = fs.read_bytes(file_path);
+        let content = file.read(file_path);
         match content {
-            Result.Err(_) => { return res.status(500).text("Internal Server Error"); },
-            Result.Ok(bytes) => {
-                return res
-                    .status(200)
-                    .header("Content-Type", mime)
-                    .header("Content-Length", bytes.length().to_string())
-                    .bytes(bytes);
+            Err(_) => { return error_response(500, "Internal Server Error"); },
+            Ok(body) => {
+                return make_response(200, body, mime);
             },
         }
     };
@@ -72,15 +90,18 @@ export fn static_files(root_dir: string): any {
 
 // Prevent path traversal: strip leading /, normalize ..
 fn sanitize_path(req_path: string): string {
-    let clean = req_path.trim_start_matches("/");
+    let mut clean = req_path;
+    while clean.startsWith("/") {
+        clean = clean.slice(1, clean.length());
+    }
     let parts = clean.split("/").filter(fn(p: string): bool { return p != ".." && p != "."; });
     return parts.join("/");
 }
 
 fn path_extension(file_path: string): string {
-    let dot = file_path.last_index_of(".");
-    if dot < 0 {
-        return "";
+    let dot = file_path.lastIndexOf(".");
+    match dot {
+        None => { return ""; },
+        Some(i) => { return file_path.slice(i + 1, file_path.length()).toLowerCase(); },
     }
-    return file_path.slice(dot + 1, file_path.length()).to_lowercase();
 }
