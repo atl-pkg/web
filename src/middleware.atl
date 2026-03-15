@@ -33,8 +33,7 @@ export fn logger(): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: any): any {
             let result = next(req);
-            let s = result.status;
-            console.log(`${req.method} ${req.path} ${s}`);
+            console.log(`${req.method} ${req.path} ${result.status}`);
             return result;
         };
     };
@@ -47,25 +46,23 @@ export fn cors(origin: string): Middleware {
             // Handle preflight
             if req.method == "OPTIONS" {
                 let mut h = new Map<string, string>();
-                h = h.set("Access-Control-Allow-Origin", origin);
-                h = h.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-                h = h.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                h.set("Access-Control-Allow-Origin", origin);
+                h.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+                h.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
                 let mut m = new Map<string, any>();
-                m = m.set("status", 204);
-                m = m.set("body", "");
-                m = m.set("headers", h);
+                m.set("status", 204);
+                m.set("body", "");
+                m.set("headers", h);
                 return m;
             }
 
             let result = next(req);
-            // Build a new response with CORS header added.
-            // Access response fields via dot-access (field lookup on the map).
             let mut h = new Map<string, string>();
-            h = h.set("Access-Control-Allow-Origin", origin);
+            h.set("Access-Control-Allow-Origin", origin);
             let mut m = new Map<string, any>();
-            m = m.set("status", result.status);
-            m = m.set("body", result.body);
-            m = m.set("headers", h);
+            m.set("status", result.status);
+            m.set("body", result.body);
+            m.set("headers", h);
             return m;
         };
     };
@@ -84,9 +81,9 @@ export fn json_body(): Middleware {
                     match parsed {
                         Err(_) => {
                             let mut m = new Map<string, any>();
-                            m = m.set("status", 400);
-                            m = m.set("body", "Invalid JSON body");
-                            m = m.set("headers", new Map<string, string>());
+                            m.set("status", 400);
+                            m.set("body", "Invalid JSON body");
+                            m.set("headers", new Map<string, string>());
                             return m;
                         },
                         Ok(_) => {},
@@ -102,11 +99,11 @@ export fn json_body(): Middleware {
 // max_requests per window_ms milliseconds.
 export fn rate_limit(max_requests: number, window_ms: number): Middleware {
     let mut counters = new Map<string, number>();
-    let mut window_start = datetime.now().timestamp();
+    let mut window_start = performance.now();
 
     return fn(next: Handler): Handler {
         return fn(req: any): any {
-            let now = datetime.now().timestamp();
+            let now = performance.now();
 
             // Reset window if expired
             if now - window_start > window_ms {
@@ -118,15 +115,15 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
             let ip = unwrap_or(xff, "unknown");
             let prev = counters.get(ip);
             let count = unwrap_or(prev, 0) + 1;
-            counters = counters.set(ip, count);
+            counters.set(ip, count);
 
             if count > max_requests {
                 let mut h = new Map<string, string>();
-                h = h.set("Retry-After", math.ceil(window_ms / 1000).toString());
+                h.set("Retry-After", math.ceil(window_ms / 1000).toString());
                 let mut m = new Map<string, any>();
-                m = m.set("status", 429);
-                m = m.set("body", "Too Many Requests");
-                m = m.set("headers", h);
+                m.set("status", 429);
+                m.set("body", "Too Many Requests");
+                m.set("headers", h);
                 return m;
             }
 
@@ -142,20 +139,20 @@ export fn basic_auth(validate: any): Middleware {
             let auth = req.headers["authorization"];
             if auth == None {
                 let mut h = new Map<string, string>();
-                h = h.set("WWW-Authenticate", "Basic realm=\"Protected\"");
+                h.set("WWW-Authenticate", "Basic realm=\"Protected\"");
                 let mut m = new Map<string, any>();
-                m = m.set("status", 401);
-                m = m.set("body", "Unauthorized");
-                m = m.set("headers", h);
+                m.set("status", 401);
+                m.set("body", "Unauthorized");
+                m.set("headers", h);
                 return m;
             }
 
             let parts = unwrap(auth).split(" ");
             if parts.length() != 2 {
                 let mut m = new Map<string, any>();
-                m = m.set("status", 400);
-                m = m.set("body", "Bad Authorization header");
-                m = m.set("headers", new Map<string, string>());
+                m.set("status", 400);
+                m.set("body", "Bad Authorization header");
+                m.set("headers", new Map<string, string>());
                 return m;
             }
 
@@ -163,9 +160,9 @@ export fn basic_auth(validate: any): Middleware {
             let credentials = decoded.split(":");
             if credentials.length() < 2 {
                 let mut m = new Map<string, any>();
-                m = m.set("status", 400);
-                m = m.set("body", "Bad credentials format");
-                m = m.set("headers", new Map<string, string>());
+                m.set("status", 400);
+                m.set("body", "Bad credentials format");
+                m.set("headers", new Map<string, string>());
                 return m;
             }
 
@@ -174,9 +171,9 @@ export fn basic_auth(validate: any): Middleware {
 
             if !validate(username, password) {
                 let mut m = new Map<string, any>();
-                m = m.set("status", 401);
-                m = m.set("body", "Invalid credentials");
-                m = m.set("headers", new Map<string, string>());
+                m.set("status", 401);
+                m.set("body", "Invalid credentials");
+                m.set("headers", new Map<string, string>());
                 return m;
             }
 

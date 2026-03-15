@@ -14,7 +14,7 @@
 //
 //   router.get("/api/data", fn(req: any): any {
 //       let mut m = new Map<string, any>();
-//       m = m.set("items", [1, 2, 3]);
+//       m.set("items", [1, 2, 3]);
 //       return json_resp(m);
 //   });
 
@@ -26,9 +26,9 @@ fn empty_headers(): any {
 // Build a base response map with given status, body, and headers.
 export fn response(status: number, body: string, headers: any): any {
     let mut m = new Map<string, any>();
-    m = m.set("status", status);
-    m = m.set("body", body);
-    m = m.set("headers", headers);
+    m.set("status", status);
+    m.set("body", body);
+    m.set("headers", headers);
     return m;
 }
 
@@ -40,21 +40,21 @@ export fn ok(body: string): any {
 // 200 OK — HTML content.
 export fn html(body: string): any {
     let mut h = new Map<string, string>();
-    h = h.set("Content-Type", "text/html; charset=utf-8");
+    h.set("Content-Type", "text/html; charset=utf-8");
     return response(200, body, h);
 }
 
 // 200 OK — JSON content.  data must be JSON-serialisable.
 export fn json_resp(data: any): any {
     let mut h = new Map<string, string>();
-    h = h.set("Content-Type", "application/json");
+    h.set("Content-Type", "application/json");
     return response(200, json.stringify(data), h);
 }
 
 // 200 OK — plain text with Content-Type: text/plain.
 export fn text(body: string): any {
     let mut h = new Map<string, string>();
-    h = h.set("Content-Type", "text/plain; charset=utf-8");
+    h.set("Content-Type", "text/plain; charset=utf-8");
     return response(200, body, h);
 }
 
@@ -66,7 +66,7 @@ export fn status_text(code: number, body: string): any {
 // 301/302 redirect.
 export fn redirect(url: string, code: number): any {
     let mut h = new Map<string, string>();
-    h = h.set("Location", url);
+    h.set("Location", url);
     return response(code, "", h);
 }
 
@@ -83,14 +83,14 @@ export fn bad_request(msg: string): any {
 // 401 Unauthorized.
 export fn unauthorized(realm: string): any {
     let mut h = new Map<string, string>();
-    h = h.set("WWW-Authenticate", `Basic realm="${realm}"`);
+    h.set("WWW-Authenticate", `Basic realm="${realm}"`);
     return response(401, "Unauthorized", h);
 }
 
 // 429 Too Many Requests.
 export fn too_many_requests(retry_after: number): any {
     let mut h = new Map<string, string>();
-    h = h.set("Retry-After", retry_after.toString());
+    h.set("Retry-After", retry_after.toString());
     return response(429, "Too Many Requests", h);
 }
 
@@ -102,20 +102,20 @@ export fn internal_error(msg: string): any {
 // Add or overwrite a single header on an existing response map.
 // Returns a new response map (CoW style).
 export fn with_header(resp: any, name: string, value: string): any {
-    let mut h = resp.get("headers");
-    h = h.set(name, value);
+    let mut h = resp.headers;
+    h.set(name, value);
     let mut m = new Map<string, any>();
-    m = m.set("status", resp.get("status"));
-    m = m.set("body", resp.get("body"));
-    m = m.set("headers", h);
+    m.set("status", resp.status);
+    m.set("body", resp.body);
+    m.set("headers", h);
     return m;
 }
 
 // Convenience: replace the headers map on an existing response.
 export fn with_headers(resp: any, extra: any): any {
     let mut m = new Map<string, any>();
-    m = m.set("status", resp.get("status"));
-    m = m.set("body", resp.get("body"));
-    m = m.set("headers", extra);
+    m.set("status", resp.status);
+    m.set("body", resp.body);
+    m.set("headers", extra);
     return m;
 }

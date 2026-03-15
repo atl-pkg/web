@@ -225,7 +225,7 @@ fn eval_for(tokens: TplToken[], start: number, spec: string, ctx: Map<string, an
         Some(items) => {
             for item in items {
                 let mut item_ctx = ctx;
-                item_ctx = item_ctx.set(var_name, item);
+                item_ctx.set(var_name, item);
                 output = output + eval_nodes(body, item_ctx, partials);
             }
         },

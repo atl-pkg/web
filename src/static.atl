@@ -35,19 +35,19 @@ fn mime_for_ext(ext: string): string {
 
 fn make_response(status: number, body: string, content_type: string): any {
     let mut h = new Map<string, string>();
-    h = h.set("Content-Type", content_type);
+    h.set("Content-Type", content_type);
     let mut m = new Map<string, any>();
-    m = m.set("status", status);
-    m = m.set("body", body);
-    m = m.set("headers", h);
+    m.set("status", status);
+    m.set("body", body);
+    m.set("headers", h);
     return m;
 }
 
 fn error_response(status: number, msg: string): any {
     let mut m = new Map<string, any>();
-    m = m.set("status", status);
-    m = m.set("body", msg);
-    m = m.set("headers", new Map<string, string>());
+    m.set("status", status);
+    m.set("body", msg);
+    m.set("headers", new Map<string, string>());
     return m;
 }
 
@@ -90,11 +90,7 @@ export fn static_files(own root_dir: string): any {
 
 // Prevent path traversal: strip leading /, normalize ..
 fn sanitize_path(req_path: string): string {
-    let mut clean = req_path;
-    while clean.startsWith("/") {
-        clean = clean.slice(1, clean.length());
-    }
-    let parts = clean.split("/").filter(fn(p: string): bool { return p != ".." && p != "."; });
+    let parts = req_path.split("/").filter(fn(p: string): bool { return p != ".." && p != "." && p != ""; });
     return parts.join("/");
 }
 
