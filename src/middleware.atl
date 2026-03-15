@@ -26,10 +26,10 @@ export fn chain(middleware: Middleware[], handler: Handler): Handler {
 export fn logger(): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: any, res: any): any {
-            let start = time.now();
+            let start = datetime.now().timestamp();
             let result = next(req, res);
-            let duration = time.now() - start;
-            io.print(`${req.method} ${req.path} ${result.status} (${duration}ms)`);
+            let duration = datetime.now().timestamp() - start;
+            console.log(`${req.method} ${req.path} ${result.status} (${duration}ms)`);
             return result;
         };
     };
@@ -60,11 +60,11 @@ export fn json_body(): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: any, res: any): any {
             let ct = req.headers["content-type"];
-            if ct != Option.None && ct.unwrap().contains("application/json") {
+            if ct != None && unwrap(ct).includes("application/json") {
                 let parsed = json.parse(req.body);
                 match parsed {
-                    Result.Err(_) => { return res.status(400).text("Invalid JSON body"); },
-                    Result.Ok(data) => req.json = Option.Some(data),
+                    Err(_) => { return res.status(400).text("Invalid JSON body"); },
+                    Ok(data) => req.json = Some(data),
                 }
             }
             return next(req, res);
@@ -75,27 +75,27 @@ export fn json_body(): Middleware {
 // Rate limiter — simple in-memory request counter per IP.
 // max_requests per window_ms milliseconds.
 export fn rate_limit(max_requests: number, window_ms: number): Middleware {
-    let mut counters: Map<string,number> = {};
-    let mut window_start = time.now();
+    let mut counters = new Map<string, number>();
+    let mut window_start = datetime.now().timestamp();
 
     return fn(next: Handler): Handler {
         return fn(req: any, res: any): any {
-            let now = time.now();
+            let now = datetime.now().timestamp();
 
             // Reset window
             if now - window_start > window_ms {
-                counters = {};
+                counters = new Map<string, number>();
                 window_start = now;
             }
 
-            let ip = req.headers["x-forwarded-for"].unwrap_or(req.remote_addr);
-            let count = counters[ip].unwrap_or(0) + 1;
-            counters[ip] = count;
+            let ip = unwrap_or(req.headers["x-forwarded-for"], req.remote_addr);
+            let count = unwrap_or(counters.get(ip), 0) + 1;
+            counters.set(ip, count);
 
             if count > max_requests {
                 return res
                     .status(429)
-                    .header("Retry-After", math.ceil(window_ms / 1000).to_string())
+                    .header("Retry-After", math.ceil(window_ms / 1000).toString())
                     .text("Too Many Requests");
             }
 
@@ -108,20 +108,20 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
 export fn basic_auth(validate: any): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: any, res: any): any {
-            let auth = req.headers["authorization"];
-            if auth == Option.None {
+            let auth: Option<string> = req.headers["authorization"];
+            if auth == None {
                 return res
                     .status(401)
                     .header("WWW-Authenticate", "Basic realm=\"Protected\"")
                     .text("Unauthorized");
             }
 
-            let parts = auth.unwrap().split(" ");
+            let parts = unwrap(auth).split(" ");
             if parts.length() != 2 || parts[0] != "Basic" {
                 return res.status(400).text("Bad Authorization header");
             }
 
-            let decoded = encoding.base64_decode(parts[1]);
+            let decoded = encoding.base64Decode(parts[1]);
             let credentials = decoded.split(":");
             if credentials.length() < 2 {
                 return res.status(400).text("Bad credentials format");
