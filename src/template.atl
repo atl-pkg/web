@@ -13,7 +13,7 @@ export struct Template {
 }
 
 // Render a template string with a context map.
-// Supports: {{ var }}, {% for x in list %}...{% end %}, {% if cond %}...{% end %}
+// Supports: {{ var }}, {{ a.b.c }}, {% for x in list %}...{% end %}, {% if cond %}...{% end %}
 export fn render(source: string, ctx: Map<string, any>): string {
     let tmpl = Template { source: source, partials: new Map<string, string>() };
     return tmpl.render(ctx);
@@ -21,14 +21,14 @@ export fn render(source: string, ctx: Map<string, any>): string {
 
 // Render a template file (relative to project root) with context.
 export fn render_file(file_path: string, ctx: Map<string, any>): string {
-    let source = unwrap_or(file.read(file_path), "");
+    let source = file.read(file_path).unwrapOr("");
     return render(source, ctx);
 }
 
 impl Template {
     fn with_partial(self, name: string, src: string): Template {
-        self.partials.set(name, src);
-        return self;
+        let updated = self.partials.set(name, src);
+        return Template { source: self.source, partials: updated };
     }
 
     fn render(self, ctx: Map<string, any>): string {
@@ -50,14 +50,14 @@ enum TplToken {
 }
 
 // indexOf_from: search for needle in source starting at pos.
-// Atlas indexOf() does not support a start position, so we slice.
+// Atlas indexOf() returns -1 if not found (NOT Option).
 fn indexOf_from(source: string, needle: string, pos: number): Option<number> {
     let tail = source.slice(pos, source.length());
     let rel = tail.indexOf(needle);
-    match rel {
-        None => { return None; },
-        Some(i) => { return Some(i + pos); },
+    if rel == -1 {
+        return None;
     }
+    return Some(rel + pos);
 }
 
 fn tokenize(source: string): TplToken[] {
@@ -76,40 +76,40 @@ fn tokenize(source: string): TplToken[] {
         if next_expr < next_block && next_expr < len {
             // Text before {{
             if next_expr > pos {
-                tokens.push(Text(source.slice(pos, next_expr)));
+                tokens = tokens.push(Text(source.slice(pos, next_expr)));
             }
             let close_opt = indexOf_from(source, "}}", next_expr + 2);
             match close_opt {
                 None => {
-                    tokens.push(Text(source.slice(next_expr, len)));
+                    tokens = tokens.push(Text(source.slice(next_expr, len)));
                     pos = len;
                 },
                 Some(close) => {
                     let expr = source.slice(next_expr + 2, close).trim();
-                    tokens.push(Expr(expr));
+                    tokens = tokens.push(Expr(expr));
                     pos = close + 2;
                 },
             }
         } else if next_block < len {
             // Text before {%
             if next_block > pos {
-                tokens.push(Text(source.slice(pos, next_block)));
+                tokens = tokens.push(Text(source.slice(pos, next_block)));
             }
             let close_opt = indexOf_from(source, "%}", next_block + 2);
             match close_opt {
                 None => {
-                    tokens.push(Text(source.slice(next_block, len)));
+                    tokens = tokens.push(Text(source.slice(next_block, len)));
                     pos = len;
                 },
                 Some(close) => {
                     let tag = source.slice(next_block + 2, close).trim();
-                    tokens.push(parse_block_tag(tag));
+                    tokens = tokens.push(parse_block_tag(tag));
                     pos = close + 2;
                 },
             }
         } else {
             // Remaining text
-            tokens.push(Text(source.slice(pos, len)));
+            tokens = tokens.push(Text(source.slice(pos, len)));
             pos = len;
         }
     }
@@ -182,22 +182,39 @@ struct EvalResult {
     next_pos: number,
 }
 
+// resolve_expr: supports dot-path traversal for nested maps.
+// {{ user.name }} walks ctx["user"]["name"], returning "" if any step is missing.
 fn resolve_expr(expr: string, ctx: Map<string, any>): string {
-    // Simple single-key lookup from context map
-    let value = ctx.get(expr);
-    match value {
+    let parts = expr.split(".");
+    if parts.length() == 1 {
+        return ctx.get(expr).unwrapOr("");
+    }
+    // Walk the dot-path through nested Map<string, any> values
+    let first = ctx.get(parts[0]);
+    match first {
         None => { return ""; },
-        Some(v) => { return `${v}`; },
+        Some(root) => {
+            let mut current: any = root;
+            let mut i = 1;
+            while i < parts.length() {
+                let next = current.get(parts[i]);
+                match next {
+                    None => { return ""; },
+                    Some(v) => { current = v; },
+                }
+                i = i + 1;
+            }
+            return `${current}`;
+        },
     }
 }
 
 fn eval_for(tokens: TplToken[], start: number, spec: string, ctx: Map<string, any>, partials: Map<string, string>): EvalResult {
     // Parse "x in list"
-    let in_idx_opt = spec.indexOf(" in ");
-    if is_none(in_idx_opt) {
+    let in_idx = spec.indexOf(" in ");
+    if in_idx == -1 {
         return EvalResult { output: "", next_pos: start + 1 };
     }
-    let in_idx = unwrap(in_idx_opt);
     let var_name = spec.slice(0, in_idx).trim();
     let list_name = spec.slice(in_idx + 4, spec.length()).trim();
 
@@ -207,13 +224,13 @@ fn eval_for(tokens: TplToken[], start: number, spec: string, ctx: Map<string, an
     let mut i = start + 1;
     while i < tokens.length() && depth > 0 {
         match tokens[i] {
-            ForOpen(_) => { depth = depth + 1; body.push(tokens[i]); },
-            IfOpen(_) => { depth = depth + 1; body.push(tokens[i]); },
+            ForOpen(_) => { depth = depth + 1; body = body.push(tokens[i]); },
+            IfOpen(_) => { depth = depth + 1; body = body.push(tokens[i]); },
             ForClose => {
                 depth = depth - 1;
-                if depth > 0 { body.push(tokens[i]); }
+                if depth > 0 { body = body.push(tokens[i]); }
             },
-            _ => { body.push(tokens[i]); },
+            _ => { body = body.push(tokens[i]); },
         }
         i = i + 1;
     }
@@ -225,7 +242,7 @@ fn eval_for(tokens: TplToken[], start: number, spec: string, ctx: Map<string, an
         Some(items) => {
             for item in items {
                 let mut item_ctx = ctx;
-                item_ctx.set(var_name, item);
+                item_ctx = item_ctx.set(var_name, item);
                 output = output + eval_nodes(body, item_ctx, partials);
             }
         },
@@ -244,15 +261,15 @@ fn eval_if(tokens: TplToken[], start: number, cond: string, ctx: Map<string, any
 
     while i < tokens.length() && depth > 0 {
         match tokens[i] {
-            ForOpen(_) => { depth = depth + 1; if in_else { else_body.push(tokens[i]); } else { then_body.push(tokens[i]); } },
-            IfOpen(_) => { depth = depth + 1; if in_else { else_body.push(tokens[i]); } else { then_body.push(tokens[i]); } },
+            ForOpen(_) => { depth = depth + 1; if in_else { else_body = else_body.push(tokens[i]); } else { then_body = then_body.push(tokens[i]); } },
+            IfOpen(_) => { depth = depth + 1; if in_else { else_body = else_body.push(tokens[i]); } else { then_body = then_body.push(tokens[i]); } },
             ElseBlock => { if depth == 1 { in_else = true; } },
             ForClose => {
                 depth = depth - 1;
-                if depth > 0 { if in_else { else_body.push(tokens[i]); } else { then_body.push(tokens[i]); } }
+                if depth > 0 { if in_else { else_body = else_body.push(tokens[i]); } else { then_body = then_body.push(tokens[i]); } }
             },
             _ => {
-                if in_else { else_body.push(tokens[i]); } else { then_body.push(tokens[i]); }
+                if in_else { else_body = else_body.push(tokens[i]); } else { then_body = then_body.push(tokens[i]); }
             },
         }
         i = i + 1;
