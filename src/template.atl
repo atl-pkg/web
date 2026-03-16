@@ -40,7 +40,8 @@ impl Template {
 
 enum TplToken {
     Text(string),
-    Expr(string),        // {{ expression }}
+    Expr(string),        // {{ expression }}   — HTML-escaped output
+    RawExpr(string),     // {{{ expression }}} — raw unescaped output
     ForOpen(string),     // {% for x in list %}
     ForClose,            // {% end %} for a for block
     IfOpen(string),      // {% if condition %}
@@ -66,14 +67,33 @@ fn tokenize(source: string): TplToken[] {
     let len = source.length();
 
     while pos < len {
+        let raw_open_opt = indexOf_from(source, "{{{", pos);
         let expr_open_opt = indexOf_from(source, "{{", pos);
         let block_open_opt = indexOf_from(source, "{%", pos);
 
-        // Determine which delimiter comes first
+        // Determine which delimiter comes first (raw {{{ before {{ to avoid mis-match)
+        let next_raw = match raw_open_opt { Some(i) => i, None => len + 1 };
         let next_expr = match expr_open_opt { Some(i) => i, None => len + 1 };
         let next_block = match block_open_opt { Some(i) => i, None => len + 1 };
 
-        if next_expr < next_block && next_expr < len {
+        if next_raw <= next_expr && next_raw < next_block && next_raw < len {
+            // Text before {{{
+            if next_raw > pos {
+                tokens = tokens.push(Text(source.slice(pos, next_raw)));
+            }
+            let close_opt = indexOf_from(source, "}}}", next_raw + 3);
+            match close_opt {
+                None => {
+                    tokens = tokens.push(Text(source.slice(next_raw, len)));
+                    pos = len;
+                },
+                Some(close) => {
+                    let expr = source.slice(next_raw + 3, close).trim();
+                    tokens = tokens.push(RawExpr(expr));
+                    pos = close + 3;
+                },
+            }
+        } else if next_expr < next_block && next_expr < len {
             // Text before {{
             if next_expr > pos {
                 tokens = tokens.push(Text(source.slice(pos, next_expr)));
@@ -139,6 +159,20 @@ fn parse_block_tag(tag: string): TplToken {
     return Text(`{%${tag}%}`);
 }
 
+// ── HTML escaping ─────────────────────────────────────────────────────────────
+
+// html_escape: escape <, >, &, ", ' to prevent XSS in template output.
+// Applied to all {{ expr }} interpolations. Use {{{ expr }}} for raw output.
+fn html_escape(s: string): string {
+    let mut out = s;
+    out = out.replaceAll("&", "&amp;");   // must be first to avoid double-escaping
+    out = out.replaceAll("<", "&lt;");
+    out = out.replaceAll(">", "&gt;");
+    out = out.replaceAll("\"", "&quot;");
+    out = out.replaceAll("'", "&#39;");
+    return out;
+}
+
 // ── evaluator ─────────────────────────────────────────────────────────────────
 
 fn eval_nodes(tokens: TplToken[], ctx: Map<string, any>, partials: Map<string, string>): string {
@@ -149,7 +183,8 @@ fn eval_nodes(tokens: TplToken[], ctx: Map<string, any>, partials: Map<string, s
         let token = tokens[i];
         match token {
             Text(s) => { output = output + s; },
-            Expr(expr) => { output = output + resolve_expr(expr, ctx); },
+            Expr(expr) => { output = output + html_escape(resolve_expr(expr, ctx)); },
+            RawExpr(expr) => { output = output + resolve_expr(expr, ctx); },
             ForOpen(spec) => {
                 let result = eval_for(tokens, i, spec, ctx, partials);
                 output = output + result.output;
