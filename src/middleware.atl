@@ -221,7 +221,7 @@ export fn form_body(): Middleware {
                     headers:   req.headers,
                     body:      req.body,
                     json:      req.json,
-                    form:      Some(parsed),
+                    form:      parsed,
                     cookies:   req.cookies,
                     remote_ip: req.remote_ip,
                 };
@@ -269,7 +269,7 @@ export fn multipart_body(max_size: number): Middleware {
                                 headers:   req.headers,
                                 body:      req.body,
                                 json:      req.json,
-                                form:      Some(fields),
+                                form:      fields,
                                 cookies:   req.cookies,
                                 remote_ip: req.remote_ip,
                             };

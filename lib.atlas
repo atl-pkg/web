@@ -29,6 +29,10 @@ export { Handler, Middleware,
          dev_errors, form_body, multipart_body,
          request_id, body_limit, security_headers, csrf } from "./src/middleware";
 
+// Sessions
+export { SessionStore, memory_store, session, default_session_opts,
+         req_session, session_set, session_destroy } from "./src/session";
+
 // Templating
 export { render, render_file, Template } from "./src/template";
 

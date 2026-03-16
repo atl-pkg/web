@@ -1,0 +1,223 @@
+// Session — in-memory session store + middleware
+//
+// Provides server-side sessions keyed by a session ID stored in a cookie.
+// The in-memory store is suitable for development and single-process servers.
+// For multi-process or persistent sessions, replace with a custom SessionStore.
+//
+// Usage:
+//   import { memory_store, session } from "web";
+//
+//   let store = memory_store();
+//
+//   // In your server setup:
+//   http.serve(3000, chain([session(store, "sid", default_session_opts())], dispatch));
+//
+//   // In handlers:
+//   let user_id = req_session(req).get("user_id").unwrapOr("");
+//   let updated_req = session_set(req, "user_id", "42");
+//   let logged_out  = session_destroy(req);
+
+import { Request, req_header, req_cookie } from "./request";
+import { response } from "./response";
+import { CookieOptions, set_cookie, delete_cookie } from "./response";
+
+// ── SessionStore interface ────────────────────────────────────────────────────
+
+// A session store must implement these three operations.
+// The `any` return allows multiple store implementations without generics.
+export struct SessionStore {
+    get:    any,   // fn(id: string): Option<Map<string, any>>
+    set:    any,   // fn(id: string, data: Map<string, any>): void
+    delete: any,   // fn(id: string): void
+}
+
+// ── In-memory store ──────────────────────────────────────────────────────────
+
+// Create a simple in-memory session store backed by a Map.
+// Sessions are lost on process restart — use for development only.
+export fn memory_store(): SessionStore {
+    let mut data = new Map<string, any>();
+
+    let get_fn = fn(id: string): Option<any> {
+        return data.get(id);
+    };
+
+    let set_fn = fn(id: string, session_data: any): any {
+        data = data.set(id, session_data);
+        return null;
+    };
+
+    let delete_fn = fn(id: string): any {
+        data = data.delete(id);
+        return null;
+    };
+
+    return SessionStore { get: get_fn, set: set_fn, delete: delete_fn };
+}
+
+// ── Session cookie options ───────────────────────────────────────────────────
+
+// Sensible defaults for a session cookie.
+export fn default_session_opts(): CookieOptions {
+    return CookieOptions {
+        path:      "/",
+        domain:    "",
+        max_age:   0,       // session cookie — expires when browser closes
+        secure:    false,   // set to true in production (HTTPS)
+        http_only: true,
+        same_site: "Lax",
+    };
+}
+
+// ── Session middleware ───────────────────────────────────────────────────────
+
+// session() middleware: reads the session cookie, loads data from the store,
+// and injects the session map into the request as a special header value.
+// After the handler runs it writes any mutations back to the store and
+// refreshes the cookie if a new session was created.
+//
+// cookie_name: name of the session ID cookie (e.g. "sid")
+// opts: cookie options for the Set-Cookie header
+export fn session(store: SessionStore, cookie_name: string, opts: CookieOptions): any {
+    return fn(next: any): any {
+        return fn(req: Request): any {
+            // Load or create session data
+            let sid_opt = req.cookies.get(cookie_name);
+            let mut sid = sid_opt.unwrapOr("");
+            let mut is_new = false;
+
+            let mut session_data: Map<string, any> = new Map<string, any>();
+
+            if sid.length() > 0 {
+                let existing = store.get(sid);
+                match existing {
+                    Some(d) => { session_data = d; },
+                    None => {
+                        // Cookie present but store has no record — treat as new
+                        sid = _generate_sid();
+                        is_new = true;
+                    },
+                }
+            } else {
+                sid = _generate_sid();
+                is_new = true;
+            }
+
+            // Attach session ID and data to request so handlers can read/write it.
+            // We encode as two synthetic headers: x-session-id and x-session-data (JSON).
+            let session_json = Json.stringify(session_data).unwrapOr("{}");
+            let mut new_headers = req.headers;
+            new_headers = new_headers.set("x-session-id", sid);
+            new_headers = new_headers.set("x-session-data", session_json);
+            let new_req = Request {
+                method:    req.method,
+                path:      req.path,
+                query:     req.query,
+                params:    req.params,
+                headers:   new_headers,
+                body:      req.body,
+                json:      req.json,
+                form:      req.form,
+                cookies:   req.cookies,
+                remote_ip: req.remote_ip,
+            };
+
+            let result = next(new_req);
+
+            // Read back any mutations the handler wrote via session_set/session_destroy.
+            let out_data_raw = result.headers.get("x-session-data-out").unwrapOr("");
+            let destroyed = result.headers.get("x-session-destroyed").unwrapOr("") == "1";
+
+            if destroyed {
+                store.delete(sid);
+                let mut resp_headers = result.headers;
+                resp_headers = resp_headers.delete("x-session-data-out");
+                resp_headers = resp_headers.delete("x-session-destroyed");
+                let bare_resp = response(result.status, result.body, resp_headers);
+                return delete_cookie(bare_resp, cookie_name, opts.path);
+            }
+
+            if out_data_raw.length() > 0 {
+                match Json.parse(out_data_raw) {
+                    Ok(updated) => { store.set(sid, updated); },
+                    Err(_) => {},
+                }
+            } else {
+                // No mutations — persist existing data (covers new sessions with no writes)
+                store.set(sid, session_data);
+            }
+
+            // Strip internal headers from the outgoing response
+            let mut resp_headers = result.headers;
+            resp_headers = resp_headers.delete("x-session-data-out");
+            resp_headers = resp_headers.delete("x-session-destroyed");
+            let bare_resp = response(result.status, result.body, resp_headers);
+
+            if is_new {
+                return set_cookie(bare_resp, cookie_name, sid, opts);
+            }
+            return bare_resp;
+        };
+    };
+}
+
+// ── Handler helpers ───────────────────────────────────────────────────────────
+
+// Read the session data map from the request (injected by session middleware).
+export fn req_session(req: Request): Map<string, any> {
+    let raw = req.headers.get("x-session-data").unwrapOr("{}");
+    match Json.parse(raw) {
+        Ok(data) => { return data; },
+        Err(_) => { return new Map<string, any>(); },
+    }
+}
+
+// Return a modified request with the session key set to value.
+// The updated session is serialised and written to x-session-data so the
+// middleware can persist it after the handler returns.
+//
+// Note: since Atlas uses CoW semantics, session_set returns a new Request —
+// chain calls: req = session_set(req, "key", val).
+export fn session_set(req: Request, key: string, value: any): Request {
+    let mut data = req_session(req);
+    data = data.set(key, value);
+    let new_json = Json.stringify(data).unwrapOr("{}");
+    let mut new_headers = req.headers;
+    new_headers = new_headers.set("x-session-data", new_json);
+    // Also set the out-marker so the middleware knows to persist
+    new_headers = new_headers.set("x-session-data-out", new_json);
+    return Request {
+        method:    req.method,
+        path:      req.path,
+        query:     req.query,
+        params:    req.params,
+        headers:   new_headers,
+        body:      req.body,
+        json:      req.json,
+        form:      req.form,
+        cookies:   req.cookies,
+        remote_ip: req.remote_ip,
+    };
+}
+
+// Mark the session for destruction. The session middleware will delete the
+// store entry and send a cookie-clearing Set-Cookie header.
+// Returns a response (not a Request) — call as: return session_destroy(req, resp).
+export fn session_destroy(req: Request, resp: any): any {
+    let mut h = resp.headers;
+    h = h.set("x-session-destroyed", "1");
+    return response(resp.status, resp.body, h);
+}
+
+// ── private ───────────────────────────────────────────────────────────────────
+
+// Generate a session ID from timestamp + a random-ish suffix.
+// Atlas has no crypto.randomBytes yet — use DateTime for uniqueness.
+// Track: atlas issue — Crypto.randomBytes / crypto.randomUUID
+let mut _sid_counter = 0;
+
+fn _generate_sid(): string {
+    _sid_counter = _sid_counter + 1;
+    let ts = DateTime.now().toISOString();
+    return `sid-${ts}-${_sid_counter}`;
+}
