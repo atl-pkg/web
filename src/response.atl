@@ -1,121 +1,185 @@
 // Response — functional HTTP response builders
 //
-// Atlas's http.serve() uses a request→response model:
-// the handler receives only `req` and returns a response map.
-//
-// Response maps have the shape: { status: number, body: string, headers: Map<string,string> }
+// All helpers return a response map with the shape:
+//   { status: number, body: string, headers: Map<string, string> }
 //
 // Usage:
 //   import { ok, html, json_resp, not_found, redirect } from "web";
 //
-//   router.get("/", fn(req: any): any {
+//   router.get("/", fn(req: Request): any {
 //       return html("<h1>Hello</h1>");
 //   });
 //
-//   router.get("/api/data", fn(req: any): any {
+//   router.get("/api/data", fn(req: Request): any {
 //       let mut m = new Map<string, any>();
-//       m.set("items", [1, 2, 3]);
+//       m = m.set("items", [1, 2, 3]);
 //       return json_resp(m);
 //   });
 
-// Build an empty headers map.
-fn empty_headers(): any {
-    return new Map<string, string>();
-}
-
-// Build a base response map with given status, body, and headers.
-export fn response(status: number, body: string, headers: any): any {
+// Build a base response map with the canonical shape.
+export fn response(status: number, body: string, headers: Map<string, string>): any {
     let mut m = new Map<string, any>();
-    m.set("status", status);
-    m.set("body", body);
-    m.set("headers", headers);
+    m = m.set("status", status);
+    m = m.set("body", body);
+    m = m.set("headers", headers);
     return m;
 }
 
-// 200 OK — plain text.
+// ── 2xx ───────────────────────────────────────────────────────────────────────
+
+// 200 OK — plain text body.
 export fn ok(body: string): any {
-    return response(200, body, empty_headers());
+    return response(200, body, new Map<string, string>());
 }
 
 // 200 OK — HTML content.
 export fn html(body: string): any {
     let mut h = new Map<string, string>();
-    h.set("Content-Type", "text/html; charset=utf-8");
+    h = h.set("Content-Type", "text/html; charset=utf-8");
     return response(200, body, h);
 }
 
-// 200 OK — JSON content.  data must be JSON-serialisable.
+// 200 OK — JSON content. Serializes `data`; returns "null" on stringify failure.
 export fn json_resp(data: any): any {
     let mut h = new Map<string, string>();
-    h.set("Content-Type", "application/json");
-    return response(200, Json.stringify(data).unwrap(), h);
-}
-
-// 200 OK — plain text with Content-Type: text/plain.
-export fn text(body: string): any {
-    let mut h = new Map<string, string>();
-    h.set("Content-Type", "text/plain; charset=utf-8");
+    h = h.set("Content-Type", "application/json");
+    let body = Json.stringify(data).unwrapOr("null");
     return response(200, body, h);
 }
 
-// Custom status code with a text body.
-export fn status_text(code: number, body: string): any {
-    return response(code, body, empty_headers());
+// 200 OK — plain text with explicit Content-Type.
+export fn text(body: string): any {
+    let mut h = new Map<string, string>();
+    h = h.set("Content-Type", "text/plain; charset=utf-8");
+    return response(200, body, h);
 }
 
-// 301/302 redirect.
+// 201 Created — typically used after POST that creates a resource.
+export fn created(body: string): any {
+    return response(201, body, new Map<string, string>());
+}
+
+// 202 Accepted — request received, processing not yet complete.
+export fn accepted(body: string): any {
+    return response(202, body, new Map<string, string>());
+}
+
+// 204 No Content — success with no body (DELETE, PUT with no return value).
+export fn no_content(): any {
+    return response(204, "", new Map<string, string>());
+}
+
+// ── 3xx ───────────────────────────────────────────────────────────────────────
+
+// 301/302 redirect. Use 301 for permanent, 302 for temporary.
 export fn redirect(url: string, code: number): any {
     let mut h = new Map<string, string>();
-    h.set("Location", url);
+    h = h.set("Location", url);
     return response(code, "", h);
+}
+
+// ── 4xx ───────────────────────────────────────────────────────────────────────
+
+// 400 Bad Request.
+export fn bad_request(msg: string): any {
+    return response(400, msg, new Map<string, string>());
+}
+
+// 401 Unauthorized. Includes WWW-Authenticate header for basic auth flows.
+export fn unauthorized(realm: string): any {
+    let mut h = new Map<string, string>();
+    h = h.set("WWW-Authenticate", `Basic realm="${realm}"`);
+    return response(401, "Unauthorized", h);
+}
+
+// 403 Forbidden.
+export fn forbidden(msg: string): any {
+    return response(403, msg, new Map<string, string>());
 }
 
 // 404 Not Found.
 export fn not_found(): any {
-    return response(404, "Not Found", empty_headers());
+    return response(404, "Not Found", new Map<string, string>());
 }
 
-// 400 Bad Request.
-export fn bad_request(msg: string): any {
-    return response(400, msg, empty_headers());
-}
-
-// 401 Unauthorized.
-export fn unauthorized(realm: string): any {
+// 405 Method Not Allowed.
+export fn method_not_allowed(allowed: string): any {
     let mut h = new Map<string, string>();
-    h.set("WWW-Authenticate", `Basic realm="${realm}"`);
-    return response(401, "Unauthorized", h);
+    h = h.set("Allow", allowed);
+    return response(405, "Method Not Allowed", h);
+}
+
+// 409 Conflict.
+export fn conflict(msg: string): any {
+    return response(409, msg, new Map<string, string>());
+}
+
+// 410 Gone.
+export fn gone(): any {
+    return response(410, "Gone", new Map<string, string>());
+}
+
+// 422 Unprocessable Entity — validation failure.
+export fn unprocessable(msg: string): any {
+    return response(422, msg, new Map<string, string>());
 }
 
 // 429 Too Many Requests.
 export fn too_many_requests(retry_after: number): any {
     let mut h = new Map<string, string>();
-    h.set("Retry-After", retry_after.toString());
+    h = h.set("Retry-After", retry_after.toString());
     return response(429, "Too Many Requests", h);
 }
 
+// ── 5xx ───────────────────────────────────────────────────────────────────────
+
 // 500 Internal Server Error.
 export fn internal_error(msg: string): any {
-    return response(500, msg, empty_headers());
+    return response(500, msg, new Map<string, string>());
 }
 
-// Add or overwrite a single header on an existing response map.
-// Returns a new response map (CoW style).
+// 503 Service Unavailable. Optional retry_after in seconds (0 = omit header).
+export fn service_unavailable(msg: string, retry_after: number): any {
+    if retry_after > 0 {
+        let mut h = new Map<string, string>();
+        h = h.set("Retry-After", retry_after.toString());
+        return response(503, msg, h);
+    }
+    return response(503, msg, new Map<string, string>());
+}
+
+// 504 Gateway Timeout.
+export fn gateway_timeout(): any {
+    return response(504, "Gateway Timeout", new Map<string, string>());
+}
+
+// ── generic ───────────────────────────────────────────────────────────────────
+
+// Arbitrary status code with a text body and no extra headers.
+export fn status_text(code: number, body: string): any {
+    return response(code, body, new Map<string, string>());
+}
+
+// ── header mutation helpers ───────────────────────────────────────────────────
+
+// Return a new response with one header added or overwritten.
 export fn with_header(resp: any, name: string, value: string): any {
     let mut h = resp.headers;
-    h.set(name, value);
-    let mut m = new Map<string, any>();
-    m.set("status", resp.status);
-    m.set("body", resp.body);
-    m.set("headers", h);
-    return m;
+    h = h.set(name, value);
+    return response(resp.status, resp.body, h);
 }
 
-// Convenience: replace the headers map on an existing response.
-export fn with_headers(resp: any, extra: any): any {
-    let mut m = new Map<string, any>();
-    m.set("status", resp.status);
-    m.set("body", resp.body);
-    m.set("headers", extra);
-    return m;
+// Return a new response with the headers map replaced entirely.
+export fn with_headers(resp: any, headers: Map<string, string>): any {
+    return response(resp.status, resp.body, headers);
+}
+
+// Merge extra headers into an existing response, preserving existing headers.
+// `extra` values overwrite `resp.headers` on collision.
+export fn merge_headers(resp: any, extra: Map<string, string>): any {
+    let mut h = resp.headers;
+    for entry in extra.entries() {
+        h = h.set(entry[0], entry[1]);
+    }
+    return response(resp.status, resp.body, h);
 }

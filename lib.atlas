@@ -1,16 +1,37 @@
 // web — Official Atlas web framework
 //
-// Provides router, middleware, server-side templates, static file serving,
-// HTMX helpers, and response builders on top of Atlas's built-in http.serve()
-// primitive.
+// Provides a complete HTTP server toolkit on top of Atlas's built-in
+// http.serve() primitive: typed requests, routing, middleware, response
+// builders, server-side templates, static file serving, and HTMX helpers.
 //
-// https://github.com/atl-pkg/web
-//
-// Handler signature: fn(req: any): any  (returns a response map)
+// Handler signature: fn(req: Request): any
 
-export { Router, RouteMatch } from "./src/router";
-export { chain, logger, cors, json_body, rate_limit, basic_auth, dev_errors } from "./src/middleware";
+// Core request/response types
+export { Request, req_header, req_query, req_cookie, req_json, req_form,
+         parse_query_string, parse_cookie_header } from "./src/request";
+
+export { response, ok, html, json_resp, text,
+         created, accepted, no_content,
+         redirect,
+         bad_request, unauthorized, forbidden, not_found, method_not_allowed,
+         conflict, gone, unprocessable, too_many_requests,
+         internal_error, service_unavailable, gateway_timeout,
+         status_text,
+         with_header, with_headers, merge_headers } from "./src/response";
+
+// Routing
+export { Router, Route, RouteMatch } from "./src/router";
+
+// Middleware
+export { Handler, Middleware,
+         chain, logger, cors, json_body, rate_limit, basic_auth,
+         dev_errors } from "./src/middleware";
+
+// Templating
 export { render, render_file, Template } from "./src/template";
+
+// Static file serving
 export { static_files } from "./src/static";
+
+// HTMX helpers
 export { htmx, HtmxHelpers } from "./src/htmx";
-export { response, ok, html, json_resp, text, status_text, redirect, not_found, bad_request, unauthorized, too_many_requests, internal_error, with_header, with_headers } from "./src/response";

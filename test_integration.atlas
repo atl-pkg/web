@@ -1,0 +1,475 @@
+// Integration tests for atl-pkg/web
+//
+// Uses raw test.* primitives (no Argus dependency — this is a compiler-level test).
+// Run with the Atlas CLI: atlas test test_integration.atlas
+//
+// Coverage target: ≥80% of public API surface
+// Sections:
+//   1. Request — struct construction, parsers, helpers
+//   2. Response — all status helpers, header mutation
+//   3. Router — add/find, named params, CoW safety, no-match
+//   4. Middleware — chain, cors, json_body, rate_limit, basic_auth
+//   5. Static — sanitize_path behaviour (via static_files handler)
+//   6. HTMX — helpers, header preservation
+
+import { Request, req_header, req_query, req_cookie, req_json, req_form,
+         parse_query_string, parse_cookie_header } from "./src/request";
+
+import { response, ok, html, json_resp, text,
+         created, accepted, no_content,
+         redirect, bad_request, unauthorized, forbidden, not_found,
+         method_not_allowed, conflict, gone, unprocessable, too_many_requests,
+         internal_error, service_unavailable, gateway_timeout, status_text,
+         with_header, with_headers, merge_headers } from "./src/response";
+
+import { Router, RouteMatch } from "./src/router";
+
+import { chain, logger, cors, json_body, rate_limit, basic_auth,
+         dev_errors } from "./src/middleware";
+
+import { htmx } from "./src/htmx";
+
+// ── test helpers ──────────────────────────────────────────────────────────────
+
+fn make_req(method: string, path_str: string): Request {
+    return Request {
+        method:    method,
+        path:      path_str,
+        query:     new Map<string, string>(),
+        params:    new Map<string, string>(),
+        headers:   new Map<string, string>(),
+        body:      "",
+        json:      None,
+        form:      new Map<string, string>(),
+        cookies:   new Map<string, string>(),
+        remote_ip: "127.0.0.1",
+    };
+}
+
+fn make_req_with_header(method: string, path_str: string, name: string, value: string): Request {
+    let mut h = new Map<string, string>();
+    h = h.set(name, value);
+    return Request {
+        method:    method,
+        path:      path_str,
+        query:     new Map<string, string>(),
+        params:    new Map<string, string>(),
+        headers:   h,
+        body:      "",
+        json:      None,
+        form:      new Map<string, string>(),
+        cookies:   new Map<string, string>(),
+        remote_ip: "127.0.0.1",
+    };
+}
+
+fn make_req_with_body(method: string, path_str: string, content_type: string, body: string): Request {
+    let mut h = new Map<string, string>();
+    h = h.set("content-type", content_type);
+    return Request {
+        method:    method,
+        path:      path_str,
+        query:     new Map<string, string>(),
+        params:    new Map<string, string>(),
+        headers:   h,
+        body:      body,
+        json:      None,
+        form:      new Map<string, string>(),
+        cookies:   new Map<string, string>(),
+        remote_ip: "127.0.0.1",
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. REQUEST
+// ─────────────────────────────────────────────────────────────────────────────
+
+// parse_query_string
+let qs1 = parse_query_string("a=1&b=hello&flag");
+test.assertEq(qs1.get("a").unwrapOr(""),    "1",     "qs: a=1");
+test.assertEq(qs1.get("b").unwrapOr(""),    "hello", "qs: b=hello");
+test.assertEq(qs1.get("flag").unwrapOr(""), "",      "qs: flag with no value");
+test.assert(qs1.get("missing").isNone(),             "qs: missing key is None");
+
+let qs2 = parse_query_string("?x=42");
+test.assertEq(qs2.get("x").unwrapOr(""), "42", "qs: strips leading ?");
+
+let qs3 = parse_query_string("");
+test.assert(qs3.get("a").isNone(), "qs: empty string returns empty map");
+
+// parse_cookie_header
+let cookies = parse_cookie_header("session=abc123; theme=dark; lang=en");
+test.assertEq(cookies.get("session").unwrapOr(""), "abc123", "cookie: session");
+test.assertEq(cookies.get("theme").unwrapOr(""),   "dark",   "cookie: theme");
+test.assertEq(cookies.get("lang").unwrapOr(""),    "en",     "cookie: lang");
+test.assert(cookies.get("missing").isNone(),                  "cookie: missing is None");
+
+let empty_cookies = parse_cookie_header("");
+test.assert(empty_cookies.get("x").isNone(), "cookie: empty header returns empty map");
+
+// req_header — case-insensitive
+let req_h = make_req_with_header("GET", "/", "content-type", "text/html");
+test.assert(req_header(req_h, "content-type").isSome(), "req_header: lowercase lookup works");
+test.assertEq(req_header(req_h, "content-type").unwrapOr(""), "text/html", "req_header: value correct");
+test.assert(req_header(req_h, "x-missing").isNone(), "req_header: absent header is None");
+
+// req_query
+let mut qmap = new Map<string, string>();
+qmap = qmap.set("page", "3");
+let req_q = Request {
+    method: "GET", path: "/items", query: qmap,
+    params: new Map<string, string>(), headers: new Map<string, string>(),
+    body: "", json: None, form: new Map<string, string>(),
+    cookies: new Map<string, string>(), remote_ip: "127.0.0.1",
+};
+test.assertEq(req_query(req_q, "page").unwrapOr(""), "3", "req_query: found");
+test.assert(req_query(req_q, "missing").isNone(),         "req_query: absent is None");
+
+// req_cookie
+let mut cmap = new Map<string, string>();
+cmap = cmap.set("token", "xyz");
+let req_c = Request {
+    method: "GET", path: "/", query: new Map<string, string>(),
+    params: new Map<string, string>(), headers: new Map<string, string>(),
+    body: "", json: None, form: new Map<string, string>(),
+    cookies: cmap, remote_ip: "127.0.0.1",
+};
+test.assertEq(req_cookie(req_c, "token").unwrapOr(""), "xyz", "req_cookie: found");
+test.assert(req_cookie(req_c, "missing").isNone(),          "req_cookie: absent is None");
+
+// req_json
+let req_no_json = make_req("GET", "/");
+test.assert(req_json(req_no_json).isNone(), "req_json: None when no middleware ran");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. RESPONSE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 2xx helpers
+let r_ok = ok("hello");
+test.assertEq(r_ok.status, 200, "ok: status 200");
+test.assertEq(r_ok.body,   "hello", "ok: body");
+
+let r_html = html("<h1>Hi</h1>");
+test.assertEq(r_html.status, 200, "html: status 200");
+test.assertEq(r_html.headers.get("Content-Type").unwrapOr(""), "text/html; charset=utf-8", "html: content-type");
+
+let r_text = text("plain");
+test.assertEq(r_text.headers.get("Content-Type").unwrapOr(""), "text/plain; charset=utf-8", "text: content-type");
+
+let r_json = json_resp("value");
+test.assertEq(r_json.status, 200, "json_resp: status 200");
+test.assertEq(r_json.headers.get("Content-Type").unwrapOr(""), "application/json", "json_resp: content-type");
+
+let r_created = created("done");
+test.assertEq(r_created.status, 201, "created: status 201");
+
+let r_accepted = accepted("queued");
+test.assertEq(r_accepted.status, 202, "accepted: status 202");
+
+let r_nc = no_content();
+test.assertEq(r_nc.status, 204, "no_content: status 204");
+test.assertEq(r_nc.body,   "",  "no_content: empty body");
+
+// 3xx
+let r_redir = redirect("/new", 302);
+test.assertEq(r_redir.status, 302, "redirect: status 302");
+test.assertEq(r_redir.headers.get("Location").unwrapOr(""), "/new", "redirect: Location header");
+
+// 4xx
+let r_bad = bad_request("missing field");
+test.assertEq(r_bad.status, 400, "bad_request: status 400");
+test.assertEq(r_bad.body,   "missing field", "bad_request: body");
+
+let r_unauth = unauthorized("MyRealm");
+test.assertEq(r_unauth.status, 401, "unauthorized: status 401");
+test.assert(r_unauth.headers.get("WWW-Authenticate").isSome(), "unauthorized: WWW-Authenticate present");
+
+let r_forbidden = forbidden("no access");
+test.assertEq(r_forbidden.status, 403, "forbidden: status 403");
+
+let r_nf = not_found();
+test.assertEq(r_nf.status, 404, "not_found: status 404");
+
+let r_mna = method_not_allowed("GET, HEAD");
+test.assertEq(r_mna.status, 405, "method_not_allowed: status 405");
+test.assertEq(r_mna.headers.get("Allow").unwrapOr(""), "GET, HEAD", "method_not_allowed: Allow header");
+
+let r_conflict = conflict("already exists");
+test.assertEq(r_conflict.status, 409, "conflict: status 409");
+
+let r_gone = gone();
+test.assertEq(r_gone.status, 410, "gone: status 410");
+
+let r_unproc = unprocessable("validation failed");
+test.assertEq(r_unproc.status, 422, "unprocessable: status 422");
+
+let r_toomany = too_many_requests(60);
+test.assertEq(r_toomany.status, 429, "too_many_requests: status 429");
+test.assertEq(r_toomany.headers.get("Retry-After").unwrapOr(""), "60", "too_many_requests: Retry-After");
+
+// 5xx
+let r_err = internal_error("boom");
+test.assertEq(r_err.status, 500, "internal_error: status 500");
+
+let r_svc = service_unavailable("down", 30);
+test.assertEq(r_svc.status, 503, "service_unavailable: status 503");
+test.assertEq(r_svc.headers.get("Retry-After").unwrapOr(""), "30", "service_unavailable: Retry-After");
+
+let r_svc_no_retry = service_unavailable("down", 0);
+test.assert(r_svc_no_retry.headers.get("Retry-After").isNone(), "service_unavailable 0: no Retry-After");
+
+let r_gw = gateway_timeout();
+test.assertEq(r_gw.status, 504, "gateway_timeout: status 504");
+
+// Header mutation
+let base_resp = ok("body");
+let modified = with_header(base_resp, "X-Custom", "yes");
+test.assertEq(modified.status, 200, "with_header: preserves status");
+test.assertEq(modified.body,   "body", "with_header: preserves body");
+test.assertEq(modified.headers.get("X-Custom").unwrapOr(""), "yes", "with_header: sets header");
+
+// with_headers replaces headers
+let mut new_headers = new Map<string, string>();
+new_headers = new_headers.set("X-New", "val");
+let replaced = with_headers(base_resp, new_headers);
+test.assertEq(replaced.headers.get("X-New").unwrapOr(""), "val", "with_headers: new header present");
+
+// merge_headers preserves both
+let r_with_ct = html("<p>hi</p>");
+let mut extra = new Map<string, string>();
+extra = extra.set("X-Frame-Options", "DENY");
+let merged = merge_headers(r_with_ct, extra);
+test.assertEq(merged.headers.get("Content-Type").unwrapOr(""), "text/html; charset=utf-8", "merge_headers: original preserved");
+test.assertEq(merged.headers.get("X-Frame-Options").unwrapOr(""), "DENY", "merge_headers: extra added");
+
+// CoW safety: original unchanged after with_header
+let orig = ok("original");
+let _mutated = with_header(orig, "X-Test", "1");
+test.assert(orig.headers.get("X-Test").isNone(), "response CoW: original unchanged after with_header");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. ROUTER
+// ─────────────────────────────────────────────────────────────────────────────
+
+let echo_handler = fn(req: Request): any { return ok("echo"); };
+
+// Basic add and find
+let mut router = Router { routes: [] };
+router = router.get("/users/:id", echo_handler);
+router = router.post("/items", echo_handler);
+router = router.put("/users/:id", echo_handler);
+router = router.delete("/users/:id", echo_handler);
+router = router.patch("/users/:id/name", echo_handler);
+
+let m1 = router.find("GET", "/users/42");
+test.assert(m1.isSome(), "router.find: GET /users/:id matches");
+test.assertEq(m1.unwrap().params.get("id").unwrapOr(""), "42", "router.find: :id param extracted");
+
+let m2 = router.find("POST", "/items");
+test.assert(m2.isSome(), "router.find: POST /items matches");
+test.assert(m2.unwrap().params.get("id").isNone(), "router.find: no params on static route");
+
+// Method mismatch
+let m3 = router.find("GET", "/items");
+test.assert(m3.isNone(), "router.find: GET /items does not match POST route");
+
+// Path mismatch
+let m4 = router.find("GET", "/missing");
+test.assert(m4.isNone(), "router.find: /missing returns None");
+
+// Nested params
+let m5 = router.find("PATCH", "/users/99/name");
+test.assert(m5.isSome(), "router.find: nested route matches");
+test.assertEq(m5.unwrap().params.get("id").unwrapOr(""), "99", "router.find: nested :id extracted");
+
+// CoW safety: adding routes returns new router, original unchanged
+let original_router = Router { routes: [] };
+let extended_router = original_router.get("/new", echo_handler);
+test.assertEq(original_router.routes.length(), 0, "router CoW: original has 0 routes after add");
+test.assertEq(extended_router.routes.length(), 1, "router CoW: extended has 1 route");
+
+// Route count accumulates correctly
+let mut r = Router { routes: [] };
+r = r.get("/a", echo_handler);
+r = r.get("/b", echo_handler);
+r = r.get("/c", echo_handler);
+test.assertEq(r.routes.length(), 3, "router: 3 routes after 3 adds");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. MIDDLEWARE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// chain — identity (no middleware)
+let plain_handler = fn(req: Request): any { return ok("plain"); };
+let chained_plain = chain([], plain_handler);
+let r_plain = chained_plain(make_req("GET", "/"));
+test.assertEq(r_plain.status, 200, "chain: empty middleware passes through");
+test.assertEq(r_plain.body,   "plain", "chain: empty middleware body intact");
+
+// cors — sets CORS header on non-OPTIONS request
+let cors_handler = fn(req: Request): any { return ok("body"); };
+let cors_mw = chain([cors("https://example.com")], cors_handler);
+
+let r_cors = cors_mw(make_req("GET", "/"));
+test.assertEq(r_cors.status, 200, "cors: GET passes through");
+test.assertEq(
+    r_cors.headers.get("Access-Control-Allow-Origin").unwrapOr(""),
+    "https://example.com",
+    "cors: ACAO header set"
+);
+
+// cors (H-002) — preserves inner handler headers
+let cors_with_headers_handler = fn(req: Request): any {
+    let mut h = new Map<string, string>();
+    h = h.set("X-Inner", "preserved");
+    return response(200, "ok", h);
+};
+let cors_mw2 = chain([cors("*")], cors_with_headers_handler);
+let r_cors2 = cors_mw2(make_req("GET", "/"));
+test.assertEq(r_cors2.headers.get("X-Inner").unwrapOr(""), "preserved", "cors H-002: inner headers preserved");
+test.assertEq(r_cors2.headers.get("Access-Control-Allow-Origin").unwrapOr(""), "*", "cors H-002: ACAO also present");
+
+// cors — OPTIONS preflight
+let r_preflight = cors_mw(make_req("OPTIONS", "/"));
+test.assertEq(r_preflight.status, 204, "cors: OPTIONS returns 204");
+test.assert(r_preflight.headers.get("Access-Control-Allow-Methods").isSome(), "cors: OPTIONS sets Allow-Methods");
+
+// json_body (H-003) — attaches parsed JSON to req.json
+let json_handler = fn(req: Request): any {
+    match req_json(req) {
+        None       => { return bad_request("no json"); },
+        Some(data) => { return ok("got json"); },
+    }
+};
+let json_mw = chain([json_body()], json_handler);
+
+let req_with_json = make_req_with_body("POST", "/", "application/json", "{\"key\":\"val\"}");
+let r_json_mw = json_mw(req_with_json);
+test.assertEq(r_json_mw.status, 200,       "json_body H-003: valid JSON reaches handler");
+test.assertEq(r_json_mw.body,   "got json", "json_body H-003: handler sees req.json as Some");
+
+// json_body — invalid JSON returns 400
+let req_bad_json = make_req_with_body("POST", "/", "application/json", "not-json{{");
+let r_bad_json = json_mw(req_bad_json);
+test.assertEq(r_bad_json.status, 400, "json_body: invalid JSON → 400");
+
+// json_body — non-JSON content-type skips parsing, req.json stays None
+let non_json_handler = fn(req: Request): any {
+    if req_json(req).isNone() { return ok("no json"); }
+    return bad_request("unexpected json");
+};
+let json_mw2 = chain([json_body()], non_json_handler);
+let req_form_post = make_req_with_body("POST", "/", "application/x-www-form-urlencoded", "a=1");
+let r_form = json_mw2(req_form_post);
+test.assertEq(r_form.status, 200,       "json_body: non-JSON content-type skips parsing");
+test.assertEq(r_form.body,   "no json", "json_body: req.json stays None for non-JSON");
+
+// rate_limit — first N requests succeed
+let counted_handler = fn(req: Request): any { return ok("ok"); };
+let rl_mw = chain([rate_limit(3, 60000)], counted_handler);
+let r_rl1 = rl_mw(make_req("GET", "/"));
+let r_rl2 = rl_mw(make_req("GET", "/"));
+let r_rl3 = rl_mw(make_req("GET", "/"));
+let r_rl4 = rl_mw(make_req("GET", "/"));
+test.assertEq(r_rl1.status, 200, "rate_limit: request 1 allowed");
+test.assertEq(r_rl2.status, 200, "rate_limit: request 2 allowed");
+test.assertEq(r_rl3.status, 200, "rate_limit: request 3 allowed");
+test.assertEq(r_rl4.status, 429, "rate_limit: request 4 blocked");
+
+// basic_auth — missing header → 401
+let auth_handler = fn(req: Request): any { return ok("secret"); };
+let validate_fn = fn(user: string, pass: string): bool { return user == "alice" && pass == "s3cr3t"; };
+let auth_mw = chain([basic_auth(validate_fn)], auth_handler);
+
+let r_no_auth = auth_mw(make_req("GET", "/"));
+test.assertEq(r_no_auth.status, 401, "basic_auth: missing header → 401");
+
+// basic_auth — invalid credentials → 401
+let req_bad_auth = make_req_with_header("GET", "/", "authorization", "Basic wrongcreds");
+let r_bad_auth = auth_mw(req_bad_auth);
+test.assertEq(r_bad_auth.status, 401, "basic_auth: invalid credentials → 401");
+
+// dev_errors — passes through non-5xx
+let ok_handler = fn(req: Request): any { return ok("fine"); };
+let dev_mw = chain([dev_errors()], ok_handler);
+let r_dev_ok = dev_mw(make_req("GET", "/"));
+test.assertEq(r_dev_ok.status, 200, "dev_errors: 200 passes through unchanged");
+test.assertEq(r_dev_ok.body,   "fine", "dev_errors: 200 body preserved");
+
+// dev_errors — wraps 5xx in HTML overlay
+let boom_handler = fn(req: Request): any { return internal_error("Something broke"); };
+let dev_err_mw = chain([dev_errors()], boom_handler);
+let r_dev_err = dev_err_mw(make_req("GET", "/crash"));
+test.assertEq(r_dev_err.status, 500, "dev_errors: 5xx status preserved");
+test.assert(r_dev_err.body.includes("atlas-dev-overlay"), "dev_errors: overlay HTML injected");
+
+// dev_errors — HTMX request gets OOB fragment
+let r_htmx_err = dev_err_mw(make_req_with_header("GET", "/crash", "hx-request", "true"));
+test.assert(r_htmx_err.body.includes("hx-swap-oob"), "dev_errors: HTMX gets OOB fragment");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. STATIC — sanitize_path and MIME via handler
+// ─────────────────────────────────────────────────────────────────────────────
+
+// We test static_files indirectly via requests to a non-existent root so we can
+// at least verify the 404 and 405 paths without needing real files at test time.
+let sf = static_files("./nonexistent_test_dir");
+
+// Non-GET/HEAD → 405
+let r_post_static = sf(make_req("POST", "/style.css"));
+test.assertEq(r_post_static.status, 405, "static_files: POST → 405");
+test.assertEq(r_post_static.headers.get("Allow").unwrapOr(""), "GET, HEAD", "static_files: 405 Allow header");
+
+// Missing file → 404
+let r_missing = sf(make_req("GET", "/missing.html"));
+test.assertEq(r_missing.status, 404, "static_files: missing file → 404");
+
+// HEAD → 404 for missing (same as GET, no body)
+let r_head_missing = sf(make_req("HEAD", "/missing.html"));
+test.assertEq(r_head_missing.status, 404, "static_files: HEAD missing → 404");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. HTMX helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// is_htmx
+let req_htmx    = make_req_with_header("GET", "/", "hx-request", "true");
+let req_no_htmx = make_req("GET", "/");
+test.assert( htmx.is_htmx(req_htmx),    "htmx.is_htmx: true when header present");
+test.assert(!htmx.is_htmx(req_no_htmx), "htmx.is_htmx: false when header absent");
+
+// partial
+let r_partial = htmx.partial("<div>fragment</div>");
+test.assertEq(r_partial.status, 200, "htmx.partial: status 200");
+test.assertEq(r_partial.body, "<div>fragment</div>", "htmx.partial: body correct");
+test.assertEq(r_partial.headers.get("Content-Type").unwrapOr(""), "text/html; charset=utf-8", "htmx.partial: content-type");
+
+// redirect
+let r_htmx_redir = htmx.redirect("/dashboard");
+test.assertEq(r_htmx_redir.status, 200, "htmx.redirect: status 200");
+test.assertEq(r_htmx_redir.headers.get("HX-Redirect").unwrapOr(""), "/dashboard", "htmx.redirect: HX-Redirect set");
+
+// refresh
+let r_refresh = htmx.refresh();
+test.assertEq(r_refresh.headers.get("HX-Refresh").unwrapOr(""), "true", "htmx.refresh: HX-Refresh set");
+
+// push_url — preserves existing response headers (same class as H-002)
+let base_html = html("<p>page</p>");
+let r_pushed = htmx.push_url(base_html, "/new-url");
+test.assertEq(r_pushed.headers.get("Content-Type").unwrapOr(""), "text/html; charset=utf-8", "htmx.push_url: preserves Content-Type");
+test.assertEq(r_pushed.headers.get("HX-Push-Url").unwrapOr(""), "/new-url", "htmx.push_url: HX-Push-Url set");
+
+// trigger — preserves existing headers
+let r_triggered = htmx.trigger(base_html, "refreshCart");
+test.assertEq(r_triggered.headers.get("Content-Type").unwrapOr(""), "text/html; charset=utf-8", "htmx.trigger: preserves Content-Type");
+test.assertEq(r_triggered.headers.get("HX-Trigger").unwrapOr(""), "refreshCart", "htmx.trigger: HX-Trigger set");
+
+// oob
+let oob_result = htmx.oob("<main>content</main>", ["<aside hx-swap-oob=\"true\">nav</aside>"]);
+test.assert(oob_result.includes("<main>"), "htmx.oob: main content present");
+test.assert(oob_result.includes("hx-swap-oob"), "htmx.oob: fragment present");
+
+// stop_polling
+let r_stop = htmx.stop_polling();
+test.assertEq(r_stop.status, 286, "htmx.stop_polling: status 286");

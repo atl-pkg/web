@@ -1,0 +1,110 @@
+// Request — typed HTTP request object
+//
+// Handlers receive a Request from the Atlas HTTP runtime.
+// Middleware creates modified copies via explicit field construction (CoW pattern).
+//
+// Handler signature: fn(req: Request): any
+//
+// Note: URL percent-decoding is not yet implemented in parse_query_string /
+// parse_cookie_header — values containing %XX sequences are returned verbatim.
+// Tracked: atlas/issues — stdlib needs url_decode(s: string): string
+
+export struct Request {
+    method:    string,
+    path:      string,
+    query:     Map<string, string>,
+    params:    Map<string, string>,
+    headers:   Map<string, string>,
+    body:      string,
+    json:      Option<any>,
+    form:      Map<string, string>,
+    cookies:   Map<string, string>,
+    remote_ip: string,
+}
+
+// ── field helpers ─────────────────────────────────────────────────────────────
+
+// Case-insensitive header lookup (headers are stored lowercase).
+export fn req_header(req: Request, name: string): Option<string> {
+    return req.headers.get(name.toLowerCase());
+}
+
+// Query parameter lookup.
+export fn req_query(req: Request, key: string): Option<string> {
+    return req.query.get(key);
+}
+
+// Cookie value lookup.
+export fn req_cookie(req: Request, name: string): Option<string> {
+    return req.cookies.get(name);
+}
+
+// Return the parsed JSON body, if json_body() middleware has run.
+export fn req_json(req: Request): Option<any> {
+    return req.json;
+}
+
+// Form field lookup (populated by form_body() middleware).
+export fn req_form(req: Request, key: string): Option<string> {
+    return req.form.get(key);
+}
+
+// ── parsers ───────────────────────────────────────────────────────────────────
+
+// Parse a URL query string into a key→value map.
+// "a=1&b=hello&flag" → { "a": "1", "b": "hello", "flag": "" }
+// Duplicate keys: last value wins.
+export fn parse_query_string(qs: string): Map<string, string> {
+    let mut m = new Map<string, string>();
+    if qs.length() == 0 {
+        return m;
+    }
+    // Strip leading '?' if present
+    let raw = if qs.startsWith("?") { qs.slice(1, qs.length()) } else { qs };
+    let pairs = raw.split("&");
+    for pair in pairs {
+        if pair.length() == 0 {
+            continue;
+        }
+        let eq = pair.indexOf("=");
+        if eq < 0 {
+            // key with no value: flag-style param
+            m = m.set(pair, "");
+        } else {
+            let key = pair.slice(0, eq);
+            let val = pair.slice(eq + 1, pair.length());
+            if key.length() > 0 {
+                m = m.set(key, val);
+            }
+        }
+    }
+    return m;
+}
+
+// Parse a Cookie request header into a name→value map.
+// "session=abc; theme=dark" → { "session": "abc", "theme": "dark" }
+export fn parse_cookie_header(header: string): Map<string, string> {
+    let mut m = new Map<string, string>();
+    if header.length() == 0 {
+        return m;
+    }
+    let pairs = header.split(";");
+    for pair in pairs {
+        let trimmed = pair.trim();
+        if trimmed.length() == 0 {
+            continue;
+        }
+        let eq = trimmed.indexOf("=");
+        if eq < 0 {
+            // Cookie name with no value
+            m = m.set(trimmed, "");
+        } else {
+            let name = trimmed.slice(0, eq).trim();
+            let val  = trimmed.slice(eq + 1, trimmed.length()).trim();
+            if name.length() > 0 {
+                m = m.set(name, val);
+            }
+        }
+    }
+    return m;
+}

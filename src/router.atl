@@ -1,24 +1,33 @@
-// Router — path-based request routing with named params
+// Router — path-based request routing with named parameters
 //
 // Usage:
-//   import { Router } from 'web';
+//   import { Router } from "web";
+//
 //   let mut router = Router { routes: [] };
-//   router = router.get('/users/:id', fn(req, res) { ... });
-//   http.serve(3000, fn(req, res) {
-//       const m = router.find(req.method, req.path);
-//       match m { Some(rm) => rm.handler(req, res), None => res.status(404).text("Not Found") }
-//   });
+//   router = router.get("/users/:id", fn(req: Request): any { ... });
+//   router = router.post("/items",    fn(req: Request): any { ... });
+//
+//   // In your server handler:
+//   match router.find(req.method, req.path) {
+//       Some(rm) => {
+//           // merge route params into request then dispatch
+//           rm.handler(req)
+//       },
+//       None => not_found(),
+//   }
+
+import { Request } from "./request";
 
 export struct RouteMatch {
-    params: Map<string, string>,
+    params:  Map<string, string>,
     handler: any,
 }
 
 export struct Route {
-    method: string,
-    pattern: string,
+    method:   string,
+    pattern:  string,
     segments: string[],
-    handler: any,
+    handler:  any,
 }
 
 export struct Router {
@@ -26,16 +35,17 @@ export struct Router {
 }
 
 impl Router {
+    // Register a route for the given HTTP method.
     fn add(borrow self, method: string, pattern: string, handler: any): Router {
         let segments = split_pattern(pattern);
         let route = Route {
-            method: method,
-            pattern: pattern,
+            method:   method,
+            pattern:  pattern,
             segments: segments,
-            handler: handler,
+            handler:  handler,
         };
         let mut new_routes = self.routes;
-        new_routes.push(route);
+        new_routes = new_routes.push(route);
         return Router { routes: new_routes };
     }
 
@@ -59,14 +69,16 @@ impl Router {
         return self.add("PATCH", pattern, handler);
     }
 
+    // Find a matching route for the given method and URL path.
+    // Returns Some(RouteMatch) with extracted named params, or None if no match.
     fn find(borrow self, method: string, url_path: string): Option<RouteMatch> {
         for route in self.routes {
             if route.method != method {
                 continue;
             }
             let result = match_pattern(route.segments, url_path);
-            if is_some(result) {
-                let params = unwrap(result);
+            if result.isSome() {
+                let params = result.unwrap();
                 return Some(RouteMatch { params: params, handler: route.handler });
             }
         }
@@ -74,14 +86,17 @@ impl Router {
     }
 }
 
-// Split a route pattern into segments: '/users/:id/posts' -> ['users', ':id', 'posts']
+// ── private helpers ───────────────────────────────────────────────────────────
+
+// Split a route pattern into non-empty segments.
+// "/users/:id/posts" → ["users", ":id", "posts"]
 fn split_pattern(pattern: string): string[] {
-    let parts = pattern.split("/");
-    return parts.filter(fn(s: string): bool { return s.length() > 0; });
+    return pattern.split("/").filter(fn(s: string): bool { return s.length() > 0; });
 }
 
-// Match URL path against pattern segments, extracting named params.
-// Returns Some(params) on match, None on mismatch.
+// Match URL path against a pattern's segments, extracting named `:param` values.
+// Segments must match exactly in count and value (or be a named param).
+// Returns Some(params map) on full match, None on any mismatch.
 fn match_pattern(segments: string[], url_path: string): Option<Map<string, string>> {
     let path_parts = url_path.split("/").filter(fn(s: string): bool { return s.length() > 0; });
 
@@ -92,12 +107,12 @@ fn match_pattern(segments: string[], url_path: string): Option<Map<string, strin
     let mut params = new Map<string, string>();
 
     for i in 0..segments.length() {
-        let seg = segments[i];
+        let seg  = segments[i];
         let part = path_parts[i];
 
         if seg.startsWith(":") {
             let key = seg.slice(1, seg.length());
-            params.set(key, part);
+            params = params.set(key, part);
         } else if seg != part {
             return None;
         }

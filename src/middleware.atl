@@ -1,21 +1,27 @@
 // Middleware — composable request/response pipeline
 //
-// Atlas's http.serve() calls the handler as: handler(req) → response_map
+// Middleware wraps a handler to intercept, modify, or short-circuit
+// requests and responses. Stack executes left-to-right: the first
+// middleware in the list is the outermost layer.
 //
-// Handler type: fn(req: any): any  (returns a response map)
-// Middleware type: fn(next: Handler): Handler
+// Handler type (intended):  fn(req: Request): any
+// Middleware type (intended): fn(next: Handler): Handler
+//
+// Note: Handler and Middleware are typed as `any` because Atlas does not yet
+// support function type aliases. Track: atlas issue — function type aliases.
 //
 // Usage:
-//   import { chain, logger, cors } from "web";
-//   import { dispatch } from "./app";
-//
-//   http.serve(3000, chain([logger(), cors("*")], dispatch));
+//   import { chain, logger, cors, json_body } from "web";
+//   http.serve(3000, chain([dev_errors(), logger(), cors("*"), json_body()], dispatch));
+
+import { Request, req_header, parse_cookie_header } from "./request";
+import { response, bad_request, too_many_requests, unauthorized } from "./response";
 
 export type Handler = any;
 export type Middleware = any;
 
 // Compose a list of middleware around a final handler.
-// Middleware is applied left-to-right (first in list = outermost).
+// Middleware is applied left-to-right (first = outermost / first to run).
 export fn chain(middleware: Middleware[], handler: Handler): Handler {
     let mut h = handler;
     let mut i = middleware.length() - 1;
@@ -28,66 +34,73 @@ export fn chain(middleware: Middleware[], handler: Handler): Handler {
 
 // ── built-in middleware ───────────────────────────────────────────────────────
 
-// Request/response logger. Prints method, path, status.
+// Request/response logger. Prints: METHOD PATH → STATUS
 export fn logger(): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
+        return fn(req: Request): any {
             let result = next(req);
-            console.log(`${req.method} ${req.path} ${result.status}`);
+            console.log(`${req.method} ${req.path} → ${result.status}`);
             return result;
         };
     };
 }
 
-// CORS headers. Pass "*" to allow all origins.
+// CORS headers middleware.
+// Pass "*" to allow all origins or a specific origin string.
+// Handles OPTIONS preflight automatically (responds 204 with CORS headers).
+// Inner handler headers are preserved and CORS headers are merged on top.
 export fn cors(origin: string): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
-            // Handle preflight
+        return fn(req: Request): any {
             if req.method == "OPTIONS" {
                 let mut h = new Map<string, string>();
-                h.set("Access-Control-Allow-Origin", origin);
-                h.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-                h.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
-                let mut m = new Map<string, any>();
-                m.set("status", 204);
-                m.set("body", "");
-                m.set("headers", h);
-                return m;
+                h = h.set("Access-Control-Allow-Origin", origin);
+                h = h.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+                h = h.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                h = h.set("Access-Control-Max-Age", "86400");
+                return response(204, "", h);
             }
 
             let result = next(req);
-            let mut h = new Map<string, string>();
-            h.set("Access-Control-Allow-Origin", origin);
-            let mut m = new Map<string, any>();
-            m.set("status", result.status);
-            m.set("body", result.body);
-            m.set("headers", h);
-            return m;
+
+            // Merge CORS header into the inner handler's existing headers.
+            // This preserves all headers the handler already set (H-002).
+            let mut h = result.headers;
+            h = h.set("Access-Control-Allow-Origin", origin);
+            return response(result.status, result.body, h);
         };
     };
 }
 
-// Parse JSON body and attach to req.json.
-// If body is not valid JSON, returns 400 Bad Request.
+// JSON body parser.
+// If Content-Type is application/json, parses req.body and attaches the
+// parsed value to req.json. Downstream handlers access it via req_json(req).
+// Returns 400 Bad Request if the body is not valid JSON.
 export fn json_body(): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
-            let ct = req.headers["content-type"];
-            if ct != None {
-                let ct_str = unwrap(ct);
-                if ct_str.includes("application/json") {
-                    let parsed = json.parse(req.body);
-                    match parsed {
-                        Err(_) => {
-                            let mut m = new Map<string, any>();
-                            m.set("status", 400);
-                            m.set("body", "Invalid JSON body");
-                            m.set("headers", new Map<string, string>());
-                            return m;
-                        },
-                        Ok(_) => {},
-                    }
+        return fn(req: Request): any {
+            let ct = req_header(req, "content-type").unwrapOr("");
+            if ct.includes("application/json") {
+                match Json.parse(req.body) {
+                    Err(_) => { return bad_request("Invalid JSON body"); },
+                    Ok(parsed) => {
+                        // Construct a new Request with json field populated (H-003).
+                        // Note: explicit field construction until Atlas supports struct spread.
+                        // Track: atlas issue — struct spread { ...req, field: val }
+                        let new_req = Request {
+                            method:    req.method,
+                            path:      req.path,
+                            query:     req.query,
+                            params:    req.params,
+                            headers:   req.headers,
+                            body:      req.body,
+                            json:      Some(parsed),
+                            form:      req.form,
+                            cookies:   req.cookies,
+                            remote_ip: req.remote_ip,
+                        };
+                        return next(new_req);
+                    },
                 }
             }
             return next(req);
@@ -95,36 +108,32 @@ export fn json_body(): Middleware {
     };
 }
 
-// Rate limiter — simple in-memory request counter per IP.
-// max_requests per window_ms milliseconds.
+// Simple in-memory per-IP rate limiter.
+// Allows max_requests within a rolling window_ms millisecond window.
+// Uses X-Forwarded-For when present, falls back to "unknown".
+//
+// Note: Atlas closure capture semantics for `let mut` variables must be
+// verified to ensure counters persist across requests. Track: atlas issue.
 export fn rate_limit(max_requests: number, window_ms: number): Middleware {
-    let mut counters = new Map<string, number>();
+    let mut counters    = new Map<string, number>();
     let mut window_start = performance.now();
 
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
+        return fn(req: Request): any {
             let now = performance.now();
 
-            // Reset window if expired
             if now - window_start > window_ms {
-                counters = new Map<string, number>();
+                counters     = new Map<string, number>();
                 window_start = now;
             }
 
-            let xff = req.headers["x-forwarded-for"];
-            let ip = unwrap_or(xff, "unknown");
-            let prev = counters.get(ip);
-            let count = unwrap_or(prev, 0) + 1;
-            counters.set(ip, count);
+            let ip    = req_header(req, "x-forwarded-for").unwrapOr(req.remote_ip);
+            let count = counters.get(ip).unwrapOr(0) + 1;
+            counters  = counters.set(ip, count);
 
             if count > max_requests {
-                let mut h = new Map<string, string>();
-                h.set("Retry-After", math.ceil(window_ms / 1000).toString());
-                let mut m = new Map<string, any>();
-                m.set("status", 429);
-                m.set("body", "Too Many Requests");
-                m.set("headers", h);
-                return m;
+                let retry_secs = Math.ceil(window_ms / 1000);
+                return too_many_requests(retry_secs);
             }
 
             return next(req);
@@ -132,19 +141,60 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
     };
 }
 
-// Dev error overlay middleware.
-// Intercepts 5xx responses and renders a dark-themed HTML error overlay.
-// HTMX-aware: if hx-request header is present, returns an OOB fragment
-// instead of a full page so the overlay appears inline without a full reload.
+// HTTP Basic authentication middleware.
+// `validate` is a fn(username: string, password: string): bool.
 //
-// Usage: chain([dev_errors(), logger(), cors("*")], dispatch)
-// Place FIRST in chain (outermost) so it wraps all other middleware.
+// Note: Basic auth transmits credentials in base64, not encrypted.
+// Always use HTTPS in production.
+export fn basic_auth(validate: any): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            match req_header(req, "authorization") {
+                None => {
+                    return unauthorized("Protected");
+                },
+                Some(auth_header) => {
+                    let parts = auth_header.split(" ");
+                    if parts.length() != 2 || parts[0].toLowerCase() != "basic" {
+                        return bad_request("Invalid Authorization header");
+                    }
+
+                    // parts[1] is base64-encoded "username:password"
+                    // Atlas stdlib does not yet have a base64 decoder — the raw
+                    // encoded value is split here as a placeholder.
+                    // Track: atlas issue — Crypto.base64Decode / base64Encode
+                    let decoded = parts[1];
+                    let sep = decoded.indexOf(":");
+                    if sep < 1 {
+                        return bad_request("Malformed credentials");
+                    }
+
+                    let username = decoded.slice(0, sep);
+                    let password = decoded.slice(sep + 1, decoded.length());
+
+                    if !validate(username, password) {
+                        return unauthorized("Protected");
+                    }
+
+                    return next(req);
+                },
+            }
+        };
+    };
+}
+
+// Development error overlay.
+// Intercepts 5xx responses and renders a dark-themed HTML debug overlay.
+// HTMX-aware: returns an OOB swap fragment when HX-Request header is present.
+//
+// IMPORTANT: place first (outermost) in chain, and remove from production builds.
+//   chain([dev_errors(), logger(), cors("*")], dispatch)
 export fn dev_errors(): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
+        return fn(req: Request): any {
             let result = next(req);
             if result.status >= 500 {
-                let is_htmx = req.headers["hx-request"] != None;
+                let is_htmx = req_header(req, "hx-request").isSome();
                 return _render_dev_error(req, result, is_htmx);
             }
             return result;
@@ -153,13 +203,16 @@ export fn dev_errors(): Middleware {
 }
 
 fn _escape_html(s: string): string {
-    let s1 = s.replace("&", "&amp;");
-    let s2 = s1.replace("<", "&lt;");
-    return s2.replace(">", "&gt;");
+    // replaceAll required: a single string can contain multiple instances of each char.
+    let s1 = s.replaceAll("&", "&amp;");
+    let s2 = s1.replaceAll("<", "&lt;");
+    let s3 = s2.replaceAll(">", "&gt;");
+    let s4 = s3.replaceAll("\"", "&quot;");
+    return s4.replaceAll("'", "&#39;");
 }
 
-fn _render_dev_error(req: any, result: any, is_htmx: bool): any {
-    let error_body = _escape_html(result.body);
+fn _render_dev_error(req: Request, result: any, is_htmx: bool): any {
+    let error_body   = _escape_html(result.body);
     let escaped_path = _escape_html(req.path);
 
     let overlay = `<style>
@@ -180,76 +233,19 @@ fn _render_dev_error(req: any, result: any, is_htmx: bool): any {
     <tr><th>Field</th><th>Value</th></tr>
     <tr><td>Method</td><td>${req.method}</td></tr>
     <tr><td>Path</td><td>${escaped_path}</td></tr>
+    <tr><td>Remote IP</td><td>${req.remote_ip}</td></tr>
   </table>
   <footer>dev_errors() middleware &mdash; remove from chain in production</footer>
 </div>`;
 
     let mut h = new Map<string, string>();
-    h.set("Content-Type", "text/html");
+    h = h.set("Content-Type", "text/html; charset=utf-8");
 
     if is_htmx {
         let oob_fragment = `<div id="atlas-dev-overlay-oob" hx-swap-oob="true">${overlay}</div>`;
-        let mut m = new Map<string, any>();
-        m.set("status", 200);
-        m.set("body", oob_fragment);
-        m.set("headers", h);
-        return m;
+        return response(200, oob_fragment, h);
     }
 
-    let full_page = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Atlas Error</title></head><body style="margin:0">${overlay}</body></html>`;
-    let mut m = new Map<string, any>();
-    m.set("status", 500);
-    m.set("body", full_page);
-    m.set("headers", h);
-    return m;
-}
-
-// Basic auth middleware.
-export fn basic_auth(validate: any): Middleware {
-    return fn(next: Handler): Handler {
-        return fn(req: any): any {
-            let auth = req.headers["authorization"];
-            if auth == None {
-                let mut h = new Map<string, string>();
-                h.set("WWW-Authenticate", "Basic realm=\"Protected\"");
-                let mut m = new Map<string, any>();
-                m.set("status", 401);
-                m.set("body", "Unauthorized");
-                m.set("headers", h);
-                return m;
-            }
-
-            let parts = unwrap(auth).split(" ");
-            if parts.length() != 2 {
-                let mut m = new Map<string, any>();
-                m.set("status", 400);
-                m.set("body", "Bad Authorization header");
-                m.set("headers", new Map<string, string>());
-                return m;
-            }
-
-            let decoded = parts[1];
-            let credentials = decoded.split(":");
-            if credentials.length() < 2 {
-                let mut m = new Map<string, any>();
-                m.set("status", 400);
-                m.set("body", "Bad credentials format");
-                m.set("headers", new Map<string, string>());
-                return m;
-            }
-
-            let username = credentials[0];
-            let password = credentials[1];
-
-            if !validate(username, password) {
-                let mut m = new Map<string, any>();
-                m.set("status", 401);
-                m.set("body", "Invalid credentials");
-                m.set("headers", new Map<string, string>());
-                return m;
-            }
-
-            return next(req);
-        };
-    };
+    let full_page = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Atlas Error ${result.status}</title></head><body style="margin:0">${overlay}</body></html>`;
+    return response(500, full_page, h);
 }
