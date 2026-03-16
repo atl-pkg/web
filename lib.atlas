@@ -20,7 +20,7 @@ export { response, ok, html, json_resp, text,
          with_header, with_headers, merge_headers } from "./src/response";
 
 // Routing
-export { Router, Route, RouteMatch } from "./src/router";
+export { Router, Route, RouteMatch, RouteResult } from "./src/router";
 
 // Middleware
 export { Handler, Middleware,
