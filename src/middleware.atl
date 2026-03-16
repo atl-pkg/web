@@ -359,6 +359,124 @@ fn _extract_disposition_name(headers: string): Option<string> {
     return Some(rest.slice(0, end));
 }
 
+// Assign a unique X-Request-ID to every request for distributed tracing.
+// If the incoming request already carries an X-Request-ID header it is
+// preserved; otherwise a new ID is generated from the current timestamp + a
+// monotonically-incremented counter (no UUID library required).
+// The ID is forwarded to the handler via the request headers and echoed back
+// in the response as X-Request-ID.
+export fn request_id(): Middleware {
+    let mut counter = 0;
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let existing = req_header(req, "x-request-id").unwrapOr("");
+            let id = if existing.length() > 0 {
+                existing
+            } else {
+                counter = counter + 1;
+                `${DateTime.now().toISOString()}-${counter}`;
+            };
+
+            // Inject ID into request headers so handlers can read it.
+            let mut new_headers = req.headers;
+            new_headers = new_headers.set("x-request-id", id);
+            let new_req = Request {
+                method:    req.method,
+                path:      req.path,
+                query:     req.query,
+                params:    req.params,
+                headers:   new_headers,
+                body:      req.body,
+                json:      req.json,
+                form:      req.form,
+                cookies:   req.cookies,
+                remote_ip: req.remote_ip,
+            };
+
+            let result = next(new_req);
+
+            // Echo ID in response header.
+            let mut resp_headers = result.headers;
+            resp_headers = resp_headers.set("X-Request-ID", id);
+            return response(result.status, result.body, resp_headers);
+        };
+    };
+}
+
+// Reject requests whose body exceeds `max_bytes` bytes.
+// Must be placed before body-parsing middleware (json_body, form_body) in chain.
+// Returns 413 Payload Too Large.
+export fn body_limit(max_bytes: number): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            if req.body.length() > max_bytes {
+                let mut h = new Map<string, string>();
+                return response(413, "Payload Too Large", h);
+            }
+            return next(req);
+        };
+    };
+}
+
+// Add standard security headers to every response.
+// Headers applied:
+//   X-Content-Type-Options: nosniff
+//   X-Frame-Options: DENY
+//   X-XSS-Protection: 1; mode=block
+//   Referrer-Policy: strict-origin-when-cross-origin
+//   Permissions-Policy: geolocation=(), microphone=(), camera=()
+// Pass hsts_max_age > 0 to also emit Strict-Transport-Security.
+export fn security_headers(hsts_max_age: number): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let result = next(req);
+            let mut h = result.headers;
+            h = h.set("X-Content-Type-Options", "nosniff");
+            h = h.set("X-Frame-Options", "DENY");
+            h = h.set("X-XSS-Protection", "1; mode=block");
+            h = h.set("Referrer-Policy", "strict-origin-when-cross-origin");
+            h = h.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+            if hsts_max_age > 0 {
+                h = h.set("Strict-Transport-Security", `max-age=${hsts_max_age}; includeSubDomains`);
+            }
+            return response(result.status, result.body, h);
+        };
+    };
+}
+
+// CSRF protection middleware.
+// Validates that non-safe requests (POST/PUT/PATCH/DELETE) carry a matching
+// X-CSRF-Token header. The expected token is derived from the session cookie
+// named `cookie_name`. Returns 403 Forbidden on mismatch.
+//
+// Note: Atlas does not yet provide HMAC/crypto — this uses a simple equality
+// check against a token stored in the session cookie. In production, sign
+// tokens with HMAC-SHA256. Track: atlas issue — Crypto.hmac / Crypto.sha256.
+export fn csrf(cookie_name: string): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let safe_methods = ["GET", "HEAD", "OPTIONS", "TRACE"];
+            let mut is_safe = false;
+            for m in safe_methods {
+                if req.method == m { is_safe = true; }
+            }
+            if is_safe {
+                return next(req);
+            }
+
+            let token_header = req_header(req, "x-csrf-token").unwrapOr("");
+            let token_cookie = req.cookies.get(cookie_name).unwrapOr("");
+
+            if token_header.length() == 0 || token_header != token_cookie {
+                let mut h = new Map<string, string>();
+                return response(403, "CSRF token mismatch", h);
+            }
+
+            return next(req);
+        };
+    };
+}
+
 fn _escape_html(s: string): string {
     // replaceAll required: a single string can contain multiple instances of each char.
     let s1 = s.replaceAll("&", "&amp;");
