@@ -17,7 +17,7 @@ atlas install
 
 ## Usage
 
-```atlas
+```ts
 import { Router, chain, logger, cors, htmx, render } from 'web';
 
 const router = new_router()
