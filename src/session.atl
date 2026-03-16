@@ -211,13 +211,7 @@ export fn session_destroy(req: Request, resp: any): any {
 
 // ── private ───────────────────────────────────────────────────────────────────
 
-// Generate a session ID from timestamp + a random-ish suffix.
-// Atlas has no crypto.randomBytes yet — use DateTime for uniqueness.
-// Track: atlas issue — Crypto.randomBytes / crypto.randomUUID
-let mut _sid_counter = 0;
-
+// Generate a cryptographically random session ID using RFC 4122 v4 UUID.
 fn _generate_sid(): string {
-    _sid_counter = _sid_counter + 1;
-    let ts = DateTime.now().toISOString();
-    return `sid-${ts}-${_sid_counter}`;
+    return crypto.randomUUID();
 }

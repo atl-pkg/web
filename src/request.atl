@@ -4,10 +4,6 @@
 // Middleware creates modified copies via explicit field construction (CoW pattern).
 //
 // Handler signature: fn(req: Request): any
-//
-// Note: URL percent-decoding is not yet implemented in parse_query_string /
-// parse_cookie_header — values containing %XX sequences are returned verbatim.
-// Tracked: atlas/issues — stdlib needs url_decode(s: string): string
 
 export struct Request {
     method:    string,
@@ -71,8 +67,8 @@ export fn parse_query_string(qs: string): Map<string, string> {
             // key with no value: flag-style param
             m = m.set(pair, "");
         } else {
-            let key = pair.slice(0, eq);
-            let val = pair.slice(eq + 1, pair.length());
+            let key = encoding.urlDecode(pair.slice(0, eq));
+            let val = encoding.urlDecode(pair.slice(eq + 1, pair.length()));
             if key.length() > 0 {
                 m = m.set(key, val);
             }

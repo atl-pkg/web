@@ -152,10 +152,7 @@ export fn basic_auth(validate: fn(username: string, password: string): bool): Mi
                     }
 
                     // parts[1] is base64-encoded "username:password"
-                    // Atlas stdlib does not yet have a base64 decoder — the raw
-                    // encoded value is split here as a placeholder.
-                    // Track: atlas issue — Crypto.base64Decode / base64Encode
-                    let decoded = parts[1];
+                    let decoded = encoding.base64Decode(parts[1]);
                     let sep = decoded.indexOf(":");
                     if sep < 1 {
                         return bad_request("Malformed credentials");
@@ -437,14 +434,13 @@ export fn security_headers(hsts_max_age: number): Middleware {
 }
 
 // CSRF protection middleware.
-// Validates that non-safe requests (POST/PUT/PATCH/DELETE) carry a matching
-// X-CSRF-Token header. The expected token is derived from the session cookie
-// named `cookie_name`. Returns 403 Forbidden on mismatch.
+// Validates that non-safe requests (POST/PUT/PATCH/DELETE) carry an HMAC-signed
+// X-CSRF-Token header. The token is: HMAC-SHA256(secret, session_cookie_value).
+// Returns 403 Forbidden on missing or invalid token.
 //
-// Note: Atlas does not yet provide HMAC/crypto — this uses a simple equality
-// check against a token stored in the session cookie. In production, sign
-// tokens with HMAC-SHA256. Track: atlas issue — Crypto.hmac / Crypto.sha256.
-export fn csrf(cookie_name: string): Middleware {
+// Usage: csrf("session", "my-secret-key")
+// Generate tokens in handlers: crypto.hmac(secret, session_id, "sha256")
+export fn csrf(cookie_name: string, secret: string): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             let safe_methods = ["GET", "HEAD", "OPTIONS", "TRACE"];
@@ -457,9 +453,15 @@ export fn csrf(cookie_name: string): Middleware {
             }
 
             let token_header = req_header(req, "x-csrf-token").unwrapOr("");
-            let token_cookie = req.cookies.get(cookie_name).unwrapOr("");
+            let session_id = req.cookies.get(cookie_name).unwrapOr("");
 
-            if token_header.length() == 0 || token_header != token_cookie {
+            if token_header.length() == 0 || session_id.length() == 0 {
+                let mut h = new Map<string, string>();
+                return response(403, "CSRF token missing", h);
+            }
+
+            let expected = crypto.hmac(secret, session_id, "sha256");
+            if token_header != expected {
                 let mut h = new Map<string, string>();
                 return response(403, "CSRF token mismatch", h);
             }
