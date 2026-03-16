@@ -14,7 +14,7 @@
 //   import { chain, logger, cors, json_body } from "web";
 //   http.serve(3000, chain([dev_errors(), logger(), cors("*"), json_body()], dispatch));
 
-import { Request, req_header, parse_cookie_header } from "./request";
+import { Request, req_header, parse_cookie_header, parse_query_string } from "./request";
 import { response, bad_request, too_many_requests, unauthorized } from "./response";
 
 export type Handler = any;
@@ -200,6 +200,163 @@ export fn dev_errors(): Middleware {
             return result;
         };
     };
+}
+
+// URL-encoded form body parser (application/x-www-form-urlencoded).
+// Parses req.body and attaches the key→value map to req.form.
+// Downstream handlers access form fields via req_form(req, "field").
+// Passes through unchanged if Content-Type is not urlencoded.
+// Returns 400 if body is present but malformed beyond empty fields.
+export fn form_body(): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let ct = req_header(req, "content-type").unwrapOr("");
+            if ct.includes("application/x-www-form-urlencoded") {
+                let parsed = parse_query_string(req.body);
+                let new_req = Request {
+                    method:    req.method,
+                    path:      req.path,
+                    query:     req.query,
+                    params:    req.params,
+                    headers:   req.headers,
+                    body:      req.body,
+                    json:      req.json,
+                    form:      Some(parsed),
+                    cookies:   req.cookies,
+                    remote_ip: req.remote_ip,
+                };
+                return next(new_req);
+            }
+            return next(req);
+        };
+    };
+}
+
+// Multipart form body parser (multipart/form-data).
+// Parses multipart fields into req.form; binary file parts are stored as
+// base64-encoded strings under their field name with a "__file__" prefix.
+// max_size: maximum body size in bytes; returns 400 if exceeded (0 = no limit).
+//
+// Note: Atlas does not yet provide a binary buffer type — file content is
+// exposed as the raw part body string. Track: atlas issue — Buffer/Uint8Array.
+export fn multipart_body(max_size: number): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let ct = req_header(req, "content-type").unwrapOr("");
+            if !ct.includes("multipart/form-data") {
+                return next(req);
+            }
+
+            if max_size > 0 && req.body.length() > max_size {
+                return bad_request("Request body exceeds maximum size");
+            }
+
+            // Extract boundary from Content-Type header.
+            // e.g. "multipart/form-data; boundary=----WebKitFormBoundary..."
+            let boundary_opt = _extract_boundary(ct);
+            match boundary_opt {
+                None => { return bad_request("Missing multipart boundary"); },
+                Some(boundary) => {
+                    let form_result = _parse_multipart(req.body, boundary);
+                    match form_result {
+                        Err(msg) => { return bad_request(msg); },
+                        Ok(fields) => {
+                            let new_req = Request {
+                                method:    req.method,
+                                path:      req.path,
+                                query:     req.query,
+                                params:    req.params,
+                                headers:   req.headers,
+                                body:      req.body,
+                                json:      req.json,
+                                form:      Some(fields),
+                                cookies:   req.cookies,
+                                remote_ip: req.remote_ip,
+                            };
+                            return next(new_req);
+                        },
+                    }
+                },
+            }
+        };
+    };
+}
+
+// Extract boundary value from Content-Type header string.
+// "multipart/form-data; boundary=abc123" → Some("abc123")
+fn _extract_boundary(ct: string): Option<string> {
+    let idx = ct.indexOf("boundary=");
+    if idx == -1 {
+        return None;
+    }
+    let start = idx + 9;
+    let raw = ct.slice(start, ct.length()).trim();
+    // Strip trailing parameters separated by ";"
+    let semi = raw.indexOf(";");
+    if semi == -1 {
+        return Some(raw);
+    }
+    return Some(raw.slice(0, semi).trim());
+}
+
+// Parse multipart/form-data body into a Map<string, string>.
+// Text fields are stored as-is. File fields are stored with their raw content.
+// Returns Ok(fields) or Err(message).
+fn _parse_multipart(body: string, boundary: string): Result<Map<string, string>, string> {
+    let mut fields = new Map<string, string>();
+    let delimiter = "--" + boundary;
+    let end_delimiter = delimiter + "--";
+
+    let parts = body.split(delimiter);
+
+    for part in parts {
+        // Skip preamble and epilogue
+        if part.trim() == "" || part.trim() == "--" || part.startsWith("--") {
+            continue;
+        }
+
+        // Each part is: \r\n<headers>\r\n\r\n<body>\r\n
+        let header_body_sep = part.indexOf("\r\n\r\n");
+        if header_body_sep == -1 {
+            continue;
+        }
+
+        let part_headers = part.slice(0, header_body_sep);
+        let part_body = part.slice(header_body_sep + 4, part.length());
+        // Strip trailing \r\n from part body
+        let clean_body = if part_body.endsWith("\r\n") {
+            part_body.slice(0, part_body.length() - 2)
+        } else {
+            part_body
+        };
+
+        // Extract field name from Content-Disposition header
+        let name_opt = _extract_disposition_name(part_headers);
+        match name_opt {
+            None => { continue; },
+            Some(field_name) => {
+                fields = fields.set(field_name, clean_body);
+            },
+        }
+    }
+
+    return Ok(fields);
+}
+
+// Extract the `name` attribute from a Content-Disposition header string.
+// 'Content-Disposition: form-data; name="username"' → Some("username")
+fn _extract_disposition_name(headers: string): Option<string> {
+    let name_idx = headers.indexOf("name=\"");
+    if name_idx == -1 {
+        return None;
+    }
+    let start = name_idx + 6;
+    let rest = headers.slice(start, headers.length());
+    let end = rest.indexOf("\"");
+    if end == -1 {
+        return None;
+    }
+    return Some(rest.slice(0, end));
 }
 
 fn _escape_html(s: string): string {

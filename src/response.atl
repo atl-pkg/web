@@ -183,3 +183,85 @@ export fn merge_headers(resp: any, extra: Map<string, string>): any {
     }
     return response(resp.status, resp.body, h);
 }
+
+// ── cookies ───────────────────────────────────────────────────────────────────
+
+// Options for a Set-Cookie response header.
+// All fields are optional — use defaults by omitting or setting zero values.
+//   path      — cookie path scope (default: "/")
+//   domain    — domain scope, empty = omit attribute
+//   max_age   — seconds until expiry; 0 = omit (session cookie); -1 = delete
+//   secure    — set Secure flag (HTTPS only)
+//   http_only — set HttpOnly flag (no JS access)
+//   same_site — "Strict" | "Lax" | "None" | "" (empty = omit)
+export struct CookieOptions {
+    path:      string,
+    domain:    string,
+    max_age:   number,
+    secure:    bool,
+    http_only: bool,
+    same_site: string,
+}
+
+// Default CookieOptions: path="/", session cookie, HttpOnly.
+export fn default_cookie_opts(): CookieOptions {
+    return CookieOptions {
+        path:      "/",
+        domain:    "",
+        max_age:   0,
+        secure:    false,
+        http_only: true,
+        same_site: "Lax",
+    };
+}
+
+// Build a Set-Cookie header value string from name, value, and options.
+fn build_set_cookie(name: string, value: string, opts: CookieOptions): string {
+    let mut parts = `${name}=${value}`;
+
+    let path = if opts.path.length() > 0 { opts.path } else { "/" };
+    parts = parts + `; Path=${path}`;
+
+    if opts.domain.length() > 0 {
+        parts = parts + `; Domain=${opts.domain}`;
+    }
+
+    if opts.max_age != 0 {
+        parts = parts + `; Max-Age=${opts.max_age}`;
+    }
+
+    if opts.secure {
+        parts = parts + "; Secure";
+    }
+
+    if opts.http_only {
+        parts = parts + "; HttpOnly";
+    }
+
+    if opts.same_site.length() > 0 {
+        parts = parts + `; SameSite=${opts.same_site}`;
+    }
+
+    return parts;
+}
+
+// Return a new response with a Set-Cookie header appended.
+// If a Set-Cookie header already exists it is overwritten — use
+// set_cookies() (plural) for multiple cookies on the same response.
+export fn set_cookie(resp: any, name: string, value: string, opts: CookieOptions): any {
+    let cookie_str = build_set_cookie(name, value, opts);
+    return with_header(resp, "Set-Cookie", cookie_str);
+}
+
+// Delete a cookie by setting Max-Age=-1 and an empty value.
+export fn delete_cookie(resp: any, name: string, path: string): any {
+    let opts = CookieOptions {
+        path:      if path.length() > 0 { path } else { "/" },
+        domain:    "",
+        max_age:   -1,
+        secure:    false,
+        http_only: true,
+        same_site: "Lax",
+    };
+    return set_cookie(resp, name, "", opts);
+}

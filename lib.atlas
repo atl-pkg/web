@@ -17,7 +17,8 @@ export { response, ok, html, json_resp, text,
          conflict, gone, unprocessable, too_many_requests,
          internal_error, service_unavailable, gateway_timeout,
          status_text,
-         with_header, with_headers, merge_headers } from "./src/response";
+         with_header, with_headers, merge_headers,
+         CookieOptions, default_cookie_opts, set_cookie, delete_cookie } from "./src/response";
 
 // Routing
 export { Router, Route, RouteMatch, RouteResult } from "./src/router";
@@ -25,7 +26,7 @@ export { Router, Route, RouteMatch, RouteResult } from "./src/router";
 // Middleware
 export { Handler, Middleware,
          chain, logger, cors, json_body, rate_limit, basic_auth,
-         dev_errors } from "./src/middleware";
+         dev_errors, form_body, multipart_body } from "./src/middleware";
 
 // Templating
 export { render, render_file, Template } from "./src/template";
