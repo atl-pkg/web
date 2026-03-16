@@ -1,41 +1,67 @@
-// Router — path-based request routing with named params
+// Router — path-based request routing with named parameters
 //
 // Usage:
-//   import { Router } from 'web';
+//   import { Router } from "web";
+//
 //   let mut router = Router { routes: [] };
-//   router = router.get('/users/:id', fn(req, res) { ... });
-//   http.serve(3000, fn(req, res) {
-//       const m = router.find(req.method, req.path);
-//       match m { Some(rm) => rm.handler(req, res), None => res.status(404).text("Not Found") }
+//   router = router.get("/users/:id", fn(req: Request): any { ... });
+//   router = router.post("/items",    fn(req: Request): any { ... });
+//
+//   // Wildcards:
+//   router = router.get("/files/*",      handler);   // single segment wildcard
+//   router = router.get("/static/**",    handler);   // catch-all (greedy)
+//
+//   // Route groups (shared prefix):
+//   router = router.group("/api/v1", fn(r: Router): Router {
+//       r = r.get("/users", list_users);
+//       r = r.post("/users", create_user);
+//       return r;
 //   });
+//
+//   // Dispatch with 405 support:
+//   match router.dispatch(req.method, req.path) {
+//       RouteFound(rm)         => rm.handler(req),
+//       RouteNotFound          => not_found(),
+//       RouteMethodNotAllowed  => method_not_allowed(),
+//   }
+
+import { Request } from "./request";
 
 export struct RouteMatch {
-    params: Map<string, string>,
+    params:  Map<string, string>,
     handler: any,
 }
 
 export struct Route {
-    method: string,
-    pattern: string,
+    method:   string,
+    pattern:  string,
     segments: string[],
-    handler: any,
+    handler:  any,
 }
 
 export struct Router {
     routes: Route[],
 }
 
+// RouteResult distinguishes a full match, wrong-method match (405), and no match (404).
+export enum RouteResult {
+    RouteFound(RouteMatch),
+    RouteNotFound,
+    RouteMethodNotAllowed,
+}
+
 impl Router {
+    // Register a route for the given HTTP method.
     fn add(borrow self, method: string, pattern: string, handler: any): Router {
         let segments = split_pattern(pattern);
         let route = Route {
-            method: method,
-            pattern: pattern,
+            method:   method,
+            pattern:  pattern,
             segments: segments,
-            handler: handler,
+            handler:  handler,
         };
         let mut new_routes = self.routes;
-        new_routes.push(route);
+        new_routes = new_routes.push(route);
         return Router { routes: new_routes };
     }
 
@@ -59,14 +85,49 @@ impl Router {
         return self.add("PATCH", pattern, handler);
     }
 
+    // group: register routes under a shared URL prefix.
+    // The callback receives a fresh Router; routes added inside it are merged
+    // back with the prefix prepended to each pattern.
+    fn group(borrow self, prefix: string, builder: any): Router {
+        let inner = builder(Router { routes: [] });
+        let mut result = self;
+        for route in inner.routes {
+            let full_pattern = prefix + route.pattern;
+            result = result.add(route.method, full_pattern, route.handler);
+        }
+        return result;
+    }
+
+    // dispatch: match method + path, returning RouteFound, RouteNotFound, or
+    // RouteMethodNotAllowed (path matched but wrong HTTP method).
+    fn dispatch(borrow self, method: string, url_path: string): RouteResult {
+        let mut path_matched = false;
+        for route in self.routes {
+            let result = match_pattern(route.segments, url_path);
+            if result.isSome() {
+                path_matched = true;
+                if route.method == method {
+                    let params = result.unwrapOr(new Map<string, string>());
+                    return RouteFound(RouteMatch { params: params, handler: route.handler });
+                }
+            }
+        }
+        if path_matched {
+            return RouteMethodNotAllowed;
+        }
+        return RouteNotFound;
+    }
+
+    // find: legacy helper — returns Some(RouteMatch) or None (no method+path match).
+    // Does not distinguish 404 vs 405. Prefer dispatch() for new code.
     fn find(borrow self, method: string, url_path: string): Option<RouteMatch> {
         for route in self.routes {
             if route.method != method {
                 continue;
             }
             let result = match_pattern(route.segments, url_path);
-            if is_some(result) {
-                let params = unwrap(result);
+            if result.isSome() {
+                let params = result.unwrapOr(new Map<string, string>());
                 return Some(RouteMatch { params: params, handler: route.handler });
             }
         }
@@ -74,33 +135,72 @@ impl Router {
     }
 }
 
-// Split a route pattern into segments: '/users/:id/posts' -> ['users', ':id', 'posts']
+// ── private helpers ───────────────────────────────────────────────────────────
+
+// Split a route pattern into non-empty segments.
+// "/users/:id/posts" → ["users", ":id", "posts"]
+// "/static/**"       → ["static", "**"]
 fn split_pattern(pattern: string): string[] {
-    let parts = pattern.split("/");
-    return parts.filter(fn(s: string): bool { return s.length() > 0; });
+    return pattern.split("/").filter(fn(s: string): bool { return s.length() > 0; });
 }
 
-// Match URL path against pattern segments, extracting named params.
+// match_pattern: match URL path against pattern segments, extracting params.
+//
+// Segment types:
+//   literal    — must match exactly                  e.g. "users"
+//   :param     — named parameter, matches one seg    e.g. ":id"
+//   *          — anonymous wildcard, matches one seg
+//   **         — catch-all, matches zero-or-more remaining segs (must be last)
+//
 // Returns Some(params) on match, None on mismatch.
 fn match_pattern(segments: string[], url_path: string): Option<Map<string, string>> {
     let path_parts = url_path.split("/").filter(fn(s: string): bool { return s.length() > 0; });
-
-    if segments.length() != path_parts.length() {
-        return None;
-    }
-
     let mut params = new Map<string, string>();
+    let seg_len = segments.length();
+    let path_len = path_parts.length();
 
-    for i in 0..segments.length() {
-        let seg = segments[i];
-        let part = path_parts[i];
+    let mut si = 0;
+    let mut pi = 0;
 
-        if seg.startsWith(":") {
+    while si < seg_len {
+        let seg = segments[si];
+
+        if seg == "**" {
+            // Catch-all: consume all remaining path parts as "wildcard" param
+            let mut rest = "";
+            let mut ri = pi;
+            while ri < path_len {
+                if rest.length() > 0 { rest = rest + "/"; }
+                rest = rest + path_parts[ri];
+                ri = ri + 1;
+            }
+            params = params.set("wildcard", rest);
+            return Some(params);
+        }
+
+        if pi >= path_len {
+            // Pattern still has segments but path is exhausted
+            return None;
+        }
+
+        let part = path_parts[pi];
+
+        if seg == "*" {
+            // Anonymous single-segment wildcard — consume without binding
+        } else if seg.startsWith(":") {
             let key = seg.slice(1, seg.length());
-            params.set(key, part);
+            params = params.set(key, part);
         } else if seg != part {
             return None;
         }
+
+        si = si + 1;
+        pi = pi + 1;
+    }
+
+    // All pattern segments consumed — path must also be fully consumed
+    if pi != path_len {
+        return None;
     }
 
     return Some(params);

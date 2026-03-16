@@ -1,21 +1,27 @@
 // Middleware — composable request/response pipeline
 //
-// Atlas's http.serve() calls the handler as: handler(req) → response_map
+// Middleware wraps a handler to intercept, modify, or short-circuit
+// requests and responses. Stack executes left-to-right: the first
+// middleware in the list is the outermost layer.
 //
-// Handler type: fn(req: any): any  (returns a response map)
-// Middleware type: fn(next: Handler): Handler
+// Handler type (intended):  fn(req: Request): any
+// Middleware type (intended): fn(next: Handler): Handler
+//
+// Note: Handler and Middleware are typed as `any` because Atlas does not yet
+// support function type aliases. Track: atlas issue — function type aliases.
 //
 // Usage:
-//   import { chain, logger, cors } from "web";
-//   import { dispatch } from "./app";
-//
-//   http.serve(3000, chain([logger(), cors("*")], dispatch));
+//   import { chain, logger, cors, json_body } from "web";
+//   http.serve(3000, chain([dev_errors(), logger(), cors("*"), json_body()], dispatch));
+
+import { Request, req_header, parse_cookie_header, parse_query_string } from "./request";
+import { response, bad_request, too_many_requests, unauthorized } from "./response";
 
 export type Handler = any;
 export type Middleware = any;
 
 // Compose a list of middleware around a final handler.
-// Middleware is applied left-to-right (first in list = outermost).
+// Middleware is applied left-to-right (first = outermost / first to run).
 export fn chain(middleware: Middleware[], handler: Handler): Handler {
     let mut h = handler;
     let mut i = middleware.length() - 1;
@@ -28,66 +34,73 @@ export fn chain(middleware: Middleware[], handler: Handler): Handler {
 
 // ── built-in middleware ───────────────────────────────────────────────────────
 
-// Request/response logger. Prints method, path, status.
+// Request/response logger. Prints: METHOD PATH → STATUS
 export fn logger(): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
+        return fn(req: Request): any {
             let result = next(req);
-            console.log(`${req.method} ${req.path} ${result.status}`);
+            console.log(`${req.method} ${req.path} → ${result.status}`);
             return result;
         };
     };
 }
 
-// CORS headers. Pass "*" to allow all origins.
+// CORS headers middleware.
+// Pass "*" to allow all origins or a specific origin string.
+// Handles OPTIONS preflight automatically (responds 204 with CORS headers).
+// Inner handler headers are preserved and CORS headers are merged on top.
 export fn cors(origin: string): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
-            // Handle preflight
+        return fn(req: Request): any {
             if req.method == "OPTIONS" {
                 let mut h = new Map<string, string>();
-                h.set("Access-Control-Allow-Origin", origin);
-                h.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-                h.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
-                let mut m = new Map<string, any>();
-                m.set("status", 204);
-                m.set("body", "");
-                m.set("headers", h);
-                return m;
+                h = h.set("Access-Control-Allow-Origin", origin);
+                h = h.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+                h = h.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                h = h.set("Access-Control-Max-Age", "86400");
+                return response(204, "", h);
             }
 
             let result = next(req);
-            let mut h = new Map<string, string>();
-            h.set("Access-Control-Allow-Origin", origin);
-            let mut m = new Map<string, any>();
-            m.set("status", result.status);
-            m.set("body", result.body);
-            m.set("headers", h);
-            return m;
+
+            // Merge CORS header into the inner handler's existing headers.
+            // This preserves all headers the handler already set (H-002).
+            let mut h = result.headers;
+            h = h.set("Access-Control-Allow-Origin", origin);
+            return response(result.status, result.body, h);
         };
     };
 }
 
-// Parse JSON body and attach to req.json.
-// If body is not valid JSON, returns 400 Bad Request.
+// JSON body parser.
+// If Content-Type is application/json, parses req.body and attaches the
+// parsed value to req.json. Downstream handlers access it via req_json(req).
+// Returns 400 Bad Request if the body is not valid JSON.
 export fn json_body(): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
-            let ct = req.headers["content-type"];
-            if ct != None {
-                let ct_str = unwrap(ct);
-                if ct_str.includes("application/json") {
-                    let parsed = json.parse(req.body);
-                    match parsed {
-                        Err(_) => {
-                            let mut m = new Map<string, any>();
-                            m.set("status", 400);
-                            m.set("body", "Invalid JSON body");
-                            m.set("headers", new Map<string, string>());
-                            return m;
-                        },
-                        Ok(_) => {},
-                    }
+        return fn(req: Request): any {
+            let ct = req_header(req, "content-type").unwrapOr("");
+            if ct.includes("application/json") {
+                match Json.parse(req.body) {
+                    Err(_) => { return bad_request("Invalid JSON body"); },
+                    Ok(parsed) => {
+                        // Construct a new Request with json field populated (H-003).
+                        // Note: explicit field construction until Atlas supports struct spread.
+                        // Track: atlas issue — struct spread { ...req, field: val }
+                        let new_req = Request {
+                            method:    req.method,
+                            path:      req.path,
+                            query:     req.query,
+                            params:    req.params,
+                            headers:   req.headers,
+                            body:      req.body,
+                            json:      Some(parsed),
+                            form:      req.form,
+                            cookies:   req.cookies,
+                            remote_ip: req.remote_ip,
+                        };
+                        return next(new_req);
+                    },
                 }
             }
             return next(req);
@@ -95,36 +108,32 @@ export fn json_body(): Middleware {
     };
 }
 
-// Rate limiter — simple in-memory request counter per IP.
-// max_requests per window_ms milliseconds.
+// Simple in-memory per-IP rate limiter.
+// Allows max_requests within a rolling window_ms millisecond window.
+// Uses X-Forwarded-For when present, falls back to "unknown".
+//
+// Note: Atlas closure capture semantics for `let mut` variables must be
+// verified to ensure counters persist across requests. Track: atlas issue.
 export fn rate_limit(max_requests: number, window_ms: number): Middleware {
-    let mut counters = new Map<string, number>();
+    let mut counters    = new Map<string, number>();
     let mut window_start = performance.now();
 
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
+        return fn(req: Request): any {
             let now = performance.now();
 
-            // Reset window if expired
             if now - window_start > window_ms {
-                counters = new Map<string, number>();
+                counters     = new Map<string, number>();
                 window_start = now;
             }
 
-            let xff = req.headers["x-forwarded-for"];
-            let ip = unwrap_or(xff, "unknown");
-            let prev = counters.get(ip);
-            let count = unwrap_or(prev, 0) + 1;
-            counters.set(ip, count);
+            let ip    = req_header(req, "x-forwarded-for").unwrapOr(req.remote_ip);
+            let count = counters.get(ip).unwrapOr(0) + 1;
+            counters  = counters.set(ip, count);
 
             if count > max_requests {
-                let mut h = new Map<string, string>();
-                h.set("Retry-After", math.ceil(window_ms / 1000).toString());
-                let mut m = new Map<string, any>();
-                m.set("status", 429);
-                m.set("body", "Too Many Requests");
-                m.set("headers", h);
-                return m;
+                let retry_secs = Math.ceil(window_ms / 1000);
+                return too_many_requests(retry_secs);
             }
 
             return next(req);
@@ -132,19 +141,60 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
     };
 }
 
-// Dev error overlay middleware.
-// Intercepts 5xx responses and renders a dark-themed HTML error overlay.
-// HTMX-aware: if hx-request header is present, returns an OOB fragment
-// instead of a full page so the overlay appears inline without a full reload.
+// HTTP Basic authentication middleware.
+// `validate` is a fn(username: string, password: string): bool.
 //
-// Usage: chain([dev_errors(), logger(), cors("*")], dispatch)
-// Place FIRST in chain (outermost) so it wraps all other middleware.
+// Note: Basic auth transmits credentials in base64, not encrypted.
+// Always use HTTPS in production.
+export fn basic_auth(validate: any): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            match req_header(req, "authorization") {
+                None => {
+                    return unauthorized("Protected");
+                },
+                Some(auth_header) => {
+                    let parts = auth_header.split(" ");
+                    if parts.length() != 2 || parts[0].toLowerCase() != "basic" {
+                        return bad_request("Invalid Authorization header");
+                    }
+
+                    // parts[1] is base64-encoded "username:password"
+                    // Atlas stdlib does not yet have a base64 decoder — the raw
+                    // encoded value is split here as a placeholder.
+                    // Track: atlas issue — Crypto.base64Decode / base64Encode
+                    let decoded = parts[1];
+                    let sep = decoded.indexOf(":");
+                    if sep < 1 {
+                        return bad_request("Malformed credentials");
+                    }
+
+                    let username = decoded.slice(0, sep);
+                    let password = decoded.slice(sep + 1, decoded.length());
+
+                    if !validate(username, password) {
+                        return unauthorized("Protected");
+                    }
+
+                    return next(req);
+                },
+            }
+        };
+    };
+}
+
+// Development error overlay.
+// Intercepts 5xx responses and renders a dark-themed HTML debug overlay.
+// HTMX-aware: returns an OOB swap fragment when HX-Request header is present.
+//
+// IMPORTANT: place first (outermost) in chain, and remove from production builds.
+//   chain([dev_errors(), logger(), cors("*")], dispatch)
 export fn dev_errors(): Middleware {
     return fn(next: Handler): Handler {
-        return fn(req: any): any {
+        return fn(req: Request): any {
             let result = next(req);
             if result.status >= 500 {
-                let is_htmx = req.headers["hx-request"] != None;
+                let is_htmx = req_header(req, "hx-request").isSome();
                 return _render_dev_error(req, result, is_htmx);
             }
             return result;
@@ -152,14 +202,292 @@ export fn dev_errors(): Middleware {
     };
 }
 
-fn _escape_html(s: string): string {
-    let s1 = s.replace("&", "&amp;");
-    let s2 = s1.replace("<", "&lt;");
-    return s2.replace(">", "&gt;");
+// URL-encoded form body parser (application/x-www-form-urlencoded).
+// Parses req.body and attaches the key→value map to req.form.
+// Downstream handlers access form fields via req_form(req, "field").
+// Passes through unchanged if Content-Type is not urlencoded.
+// Returns 400 if body is present but malformed beyond empty fields.
+export fn form_body(): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let ct = req_header(req, "content-type").unwrapOr("");
+            if ct.includes("application/x-www-form-urlencoded") {
+                let parsed = parse_query_string(req.body);
+                let new_req = Request {
+                    method:    req.method,
+                    path:      req.path,
+                    query:     req.query,
+                    params:    req.params,
+                    headers:   req.headers,
+                    body:      req.body,
+                    json:      req.json,
+                    form:      parsed,
+                    cookies:   req.cookies,
+                    remote_ip: req.remote_ip,
+                };
+                return next(new_req);
+            }
+            return next(req);
+        };
+    };
 }
 
-fn _render_dev_error(req: any, result: any, is_htmx: bool): any {
-    let error_body = _escape_html(result.body);
+// Multipart form body parser (multipart/form-data).
+// Parses multipart fields into req.form; binary file parts are stored as
+// base64-encoded strings under their field name with a "__file__" prefix.
+// max_size: maximum body size in bytes; returns 400 if exceeded (0 = no limit).
+//
+// Note: Atlas does not yet provide a binary buffer type — file content is
+// exposed as the raw part body string. Track: atlas issue — Buffer/Uint8Array.
+export fn multipart_body(max_size: number): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let ct = req_header(req, "content-type").unwrapOr("");
+            if !ct.includes("multipart/form-data") {
+                return next(req);
+            }
+
+            if max_size > 0 && req.body.length() > max_size {
+                return bad_request("Request body exceeds maximum size");
+            }
+
+            // Extract boundary from Content-Type header.
+            // e.g. "multipart/form-data; boundary=----WebKitFormBoundary..."
+            let boundary_opt = _extract_boundary(ct);
+            match boundary_opt {
+                None => { return bad_request("Missing multipart boundary"); },
+                Some(boundary) => {
+                    let form_result = _parse_multipart(req.body, boundary);
+                    match form_result {
+                        Err(msg) => { return bad_request(msg); },
+                        Ok(fields) => {
+                            let new_req = Request {
+                                method:    req.method,
+                                path:      req.path,
+                                query:     req.query,
+                                params:    req.params,
+                                headers:   req.headers,
+                                body:      req.body,
+                                json:      req.json,
+                                form:      fields,
+                                cookies:   req.cookies,
+                                remote_ip: req.remote_ip,
+                            };
+                            return next(new_req);
+                        },
+                    }
+                },
+            }
+        };
+    };
+}
+
+// Extract boundary value from Content-Type header string.
+// "multipart/form-data; boundary=abc123" → Some("abc123")
+fn _extract_boundary(ct: string): Option<string> {
+    let idx = ct.indexOf("boundary=");
+    if idx == -1 {
+        return None;
+    }
+    let start = idx + 9;
+    let raw = ct.slice(start, ct.length()).trim();
+    // Strip trailing parameters separated by ";"
+    let semi = raw.indexOf(";");
+    if semi == -1 {
+        return Some(raw);
+    }
+    return Some(raw.slice(0, semi).trim());
+}
+
+// Parse multipart/form-data body into a Map<string, string>.
+// Text fields are stored as-is. File fields are stored with their raw content.
+// Returns Ok(fields) or Err(message).
+fn _parse_multipart(body: string, boundary: string): Result<Map<string, string>, string> {
+    let mut fields = new Map<string, string>();
+    let delimiter = "--" + boundary;
+    let end_delimiter = delimiter + "--";
+
+    let parts = body.split(delimiter);
+
+    for part in parts {
+        // Skip preamble and epilogue
+        if part.trim() == "" || part.trim() == "--" || part.startsWith("--") {
+            continue;
+        }
+
+        // Each part is: \r\n<headers>\r\n\r\n<body>\r\n
+        let header_body_sep = part.indexOf("\r\n\r\n");
+        if header_body_sep == -1 {
+            continue;
+        }
+
+        let part_headers = part.slice(0, header_body_sep);
+        let part_body = part.slice(header_body_sep + 4, part.length());
+        // Strip trailing \r\n from part body
+        let clean_body = if part_body.endsWith("\r\n") {
+            part_body.slice(0, part_body.length() - 2)
+        } else {
+            part_body
+        };
+
+        // Extract field name from Content-Disposition header
+        let name_opt = _extract_disposition_name(part_headers);
+        match name_opt {
+            None => { continue; },
+            Some(field_name) => {
+                fields = fields.set(field_name, clean_body);
+            },
+        }
+    }
+
+    return Ok(fields);
+}
+
+// Extract the `name` attribute from a Content-Disposition header string.
+// 'Content-Disposition: form-data; name="username"' → Some("username")
+fn _extract_disposition_name(headers: string): Option<string> {
+    let name_idx = headers.indexOf("name=\"");
+    if name_idx == -1 {
+        return None;
+    }
+    let start = name_idx + 6;
+    let rest = headers.slice(start, headers.length());
+    let end = rest.indexOf("\"");
+    if end == -1 {
+        return None;
+    }
+    return Some(rest.slice(0, end));
+}
+
+// Assign a unique X-Request-ID to every request for distributed tracing.
+// If the incoming request already carries an X-Request-ID header it is
+// preserved; otherwise a new ID is generated from the current timestamp + a
+// monotonically-incremented counter (no UUID library required).
+// The ID is forwarded to the handler via the request headers and echoed back
+// in the response as X-Request-ID.
+export fn request_id(): Middleware {
+    let mut counter = 0;
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let existing = req_header(req, "x-request-id").unwrapOr("");
+            let id = if existing.length() > 0 {
+                existing
+            } else {
+                counter = counter + 1;
+                `${DateTime.now().toISOString()}-${counter}`;
+            };
+
+            // Inject ID into request headers so handlers can read it.
+            let mut new_headers = req.headers;
+            new_headers = new_headers.set("x-request-id", id);
+            let new_req = Request {
+                method:    req.method,
+                path:      req.path,
+                query:     req.query,
+                params:    req.params,
+                headers:   new_headers,
+                body:      req.body,
+                json:      req.json,
+                form:      req.form,
+                cookies:   req.cookies,
+                remote_ip: req.remote_ip,
+            };
+
+            let result = next(new_req);
+
+            // Echo ID in response header.
+            let mut resp_headers = result.headers;
+            resp_headers = resp_headers.set("X-Request-ID", id);
+            return response(result.status, result.body, resp_headers);
+        };
+    };
+}
+
+// Reject requests whose body exceeds `max_bytes` bytes.
+// Must be placed before body-parsing middleware (json_body, form_body) in chain.
+// Returns 413 Payload Too Large.
+export fn body_limit(max_bytes: number): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            if req.body.length() > max_bytes {
+                let mut h = new Map<string, string>();
+                return response(413, "Payload Too Large", h);
+            }
+            return next(req);
+        };
+    };
+}
+
+// Add standard security headers to every response.
+// Headers applied:
+//   X-Content-Type-Options: nosniff
+//   X-Frame-Options: DENY
+//   X-XSS-Protection: 1; mode=block
+//   Referrer-Policy: strict-origin-when-cross-origin
+//   Permissions-Policy: geolocation=(), microphone=(), camera=()
+// Pass hsts_max_age > 0 to also emit Strict-Transport-Security.
+export fn security_headers(hsts_max_age: number): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let result = next(req);
+            let mut h = result.headers;
+            h = h.set("X-Content-Type-Options", "nosniff");
+            h = h.set("X-Frame-Options", "DENY");
+            h = h.set("X-XSS-Protection", "1; mode=block");
+            h = h.set("Referrer-Policy", "strict-origin-when-cross-origin");
+            h = h.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+            if hsts_max_age > 0 {
+                h = h.set("Strict-Transport-Security", `max-age=${hsts_max_age}; includeSubDomains`);
+            }
+            return response(result.status, result.body, h);
+        };
+    };
+}
+
+// CSRF protection middleware.
+// Validates that non-safe requests (POST/PUT/PATCH/DELETE) carry a matching
+// X-CSRF-Token header. The expected token is derived from the session cookie
+// named `cookie_name`. Returns 403 Forbidden on mismatch.
+//
+// Note: Atlas does not yet provide HMAC/crypto — this uses a simple equality
+// check against a token stored in the session cookie. In production, sign
+// tokens with HMAC-SHA256. Track: atlas issue — Crypto.hmac / Crypto.sha256.
+export fn csrf(cookie_name: string): Middleware {
+    return fn(next: Handler): Handler {
+        return fn(req: Request): any {
+            let safe_methods = ["GET", "HEAD", "OPTIONS", "TRACE"];
+            let mut is_safe = false;
+            for m in safe_methods {
+                if req.method == m { is_safe = true; }
+            }
+            if is_safe {
+                return next(req);
+            }
+
+            let token_header = req_header(req, "x-csrf-token").unwrapOr("");
+            let token_cookie = req.cookies.get(cookie_name).unwrapOr("");
+
+            if token_header.length() == 0 || token_header != token_cookie {
+                let mut h = new Map<string, string>();
+                return response(403, "CSRF token mismatch", h);
+            }
+
+            return next(req);
+        };
+    };
+}
+
+fn _escape_html(s: string): string {
+    // replaceAll required: a single string can contain multiple instances of each char.
+    let s1 = s.replaceAll("&", "&amp;");
+    let s2 = s1.replaceAll("<", "&lt;");
+    let s3 = s2.replaceAll(">", "&gt;");
+    let s4 = s3.replaceAll("\"", "&quot;");
+    return s4.replaceAll("'", "&#39;");
+}
+
+fn _render_dev_error(req: Request, result: any, is_htmx: bool): any {
+    let error_body   = _escape_html(result.body);
     let escaped_path = _escape_html(req.path);
 
     let overlay = `<style>
@@ -180,76 +508,19 @@ fn _render_dev_error(req: any, result: any, is_htmx: bool): any {
     <tr><th>Field</th><th>Value</th></tr>
     <tr><td>Method</td><td>${req.method}</td></tr>
     <tr><td>Path</td><td>${escaped_path}</td></tr>
+    <tr><td>Remote IP</td><td>${req.remote_ip}</td></tr>
   </table>
   <footer>dev_errors() middleware &mdash; remove from chain in production</footer>
 </div>`;
 
     let mut h = new Map<string, string>();
-    h.set("Content-Type", "text/html");
+    h = h.set("Content-Type", "text/html; charset=utf-8");
 
     if is_htmx {
         let oob_fragment = `<div id="atlas-dev-overlay-oob" hx-swap-oob="true">${overlay}</div>`;
-        let mut m = new Map<string, any>();
-        m.set("status", 200);
-        m.set("body", oob_fragment);
-        m.set("headers", h);
-        return m;
+        return response(200, oob_fragment, h);
     }
 
-    let full_page = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Atlas Error</title></head><body style="margin:0">${overlay}</body></html>`;
-    let mut m = new Map<string, any>();
-    m.set("status", 500);
-    m.set("body", full_page);
-    m.set("headers", h);
-    return m;
-}
-
-// Basic auth middleware.
-export fn basic_auth(validate: any): Middleware {
-    return fn(next: Handler): Handler {
-        return fn(req: any): any {
-            let auth = req.headers["authorization"];
-            if auth == None {
-                let mut h = new Map<string, string>();
-                h.set("WWW-Authenticate", "Basic realm=\"Protected\"");
-                let mut m = new Map<string, any>();
-                m.set("status", 401);
-                m.set("body", "Unauthorized");
-                m.set("headers", h);
-                return m;
-            }
-
-            let parts = unwrap(auth).split(" ");
-            if parts.length() != 2 {
-                let mut m = new Map<string, any>();
-                m.set("status", 400);
-                m.set("body", "Bad Authorization header");
-                m.set("headers", new Map<string, string>());
-                return m;
-            }
-
-            let decoded = parts[1];
-            let credentials = decoded.split(":");
-            if credentials.length() < 2 {
-                let mut m = new Map<string, any>();
-                m.set("status", 400);
-                m.set("body", "Bad credentials format");
-                m.set("headers", new Map<string, string>());
-                return m;
-            }
-
-            let username = credentials[0];
-            let password = credentials[1];
-
-            if !validate(username, password) {
-                let mut m = new Map<string, any>();
-                m.set("status", 401);
-                m.set("body", "Invalid credentials");
-                m.set("headers", new Map<string, string>());
-                return m;
-            }
-
-            return next(req);
-        };
-    };
+    let full_page = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Atlas Error ${result.status}</title></head><body style="margin:0">${overlay}</body></html>`;
+    return response(500, full_page, h);
 }

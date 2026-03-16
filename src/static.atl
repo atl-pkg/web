@@ -1,17 +1,95 @@
 // Static file serving
 //
+// Returns a handler that serves files from a root directory.
+// Handles GET and HEAD only; all other methods receive 405.
+// Path traversal is blocked: ".." and "." segments are stripped.
+// Directory requests automatically resolve to index.html.
+//
 // Usage:
 //   import { static_files } from "web";
 //   http.serve(3000, static_files("./public"));
 //
-// Or mount at a prefix with a router:
+// Or mount at a prefix:
 //   router.get("/assets/*", static_files("./public"));
 
+import { Request } from "./request";
+import { response, not_found, internal_error, method_not_allowed } from "./response";
+
+// Returns a handler that serves files from `root_dir`.
+export fn static_files(own root_dir: string): any {
+    return fn(req: Request): any {
+        if req.method != "GET" && req.method != "HEAD" {
+            return method_not_allowed("GET, HEAD");
+        }
+
+        let safe_path  = sanitize_path(req.path);
+        let mut file_path = root_dir + "/" + safe_path;
+
+        // Resolve directory requests to index.html
+        if safe_path.length() == 0 || !safe_path.includes(".") {
+            // Remove any trailing slash before appending index.html
+            while file_path.endsWith("/") {
+                file_path = file_path.slice(0, file_path.length() - 1);
+            }
+            file_path = file_path + "/index.html";
+        }
+
+        let ext  = path_extension(file_path);
+        let mime = mime_for_ext(ext);
+
+        // file.read() returns Option<string>: Some(content) or None (not found).
+        match file.read(file_path) {
+            None => {
+                return not_found();
+            },
+            Some(body) => {
+                // HEAD: return headers only, no body.
+                if req.method == "HEAD" {
+                    let mut h = new Map<string, string>();
+                    h = h.set("Content-Type", mime);
+                    h = h.set("Content-Length", body.length().toString());
+                    return response(200, "", h);
+                }
+                let mut h = new Map<string, string>();
+                h = h.set("Content-Type", mime);
+                return response(200, body, h);
+            },
+        }
+    };
+}
+
+// ── private helpers ───────────────────────────────────────────────────────────
+
+// Strip leading '/', normalize ".." and "." path segments to prevent traversal.
+// "/../../etc/passwd" → "etc/passwd"
+fn sanitize_path(req_path: string): string {
+    let parts = req_path
+        .split("/")
+        .filter(fn(p: string): bool { return p != ".." && p != "." && p.length() > 0; });
+    return parts.join("/");
+}
+
+// Extract the file extension from a path (lowercase, without dot).
+// "styles/main.CSS" → "css", "/no-ext" → ""
+fn path_extension(file_path: string): string {
+    // indexOf returns a plain number; -1 means not found (TypeScript parity).
+    // Note: lastIndexOf expected to follow the same convention.
+    // Track: atlas issue — confirm lastIndexOf return type matches indexOf (number/-1).
+    let dot = file_path.lastIndexOf(".");
+    if dot < 0 {
+        return "";
+    }
+    return file_path.slice(dot + 1, file_path.length()).toLowerCase();
+}
+
+// Map file extension to MIME type.
 fn mime_for_ext(ext: string): string {
     match ext {
         "html"  => "text/html; charset=utf-8",
+        "htm"   => "text/html; charset=utf-8",
         "css"   => "text/css; charset=utf-8",
         "js"    => "application/javascript; charset=utf-8",
+        "mjs"   => "application/javascript; charset=utf-8",
         "json"  => "application/json",
         "png"   => "image/png",
         "jpg"   => "image/jpeg",
@@ -19,85 +97,20 @@ fn mime_for_ext(ext: string): string {
         "gif"   => "image/gif",
         "svg"   => "image/svg+xml",
         "ico"   => "image/x-icon",
+        "webp"  => "image/webp",
         "woff"  => "font/woff",
         "woff2" => "font/woff2",
         "ttf"   => "font/ttf",
+        "otf"   => "font/otf",
         "pdf"   => "application/pdf",
         "txt"   => "text/plain; charset=utf-8",
         "xml"   => "application/xml",
+        "wasm"  => "application/wasm",
         "mp4"   => "video/mp4",
         "webm"  => "video/webm",
         "mp3"   => "audio/mpeg",
         "wav"   => "audio/wav",
+        "ogg"   => "audio/ogg",
         _       => "application/octet-stream",
-    }
-}
-
-fn make_response(status: number, body: string, content_type: string): any {
-    let mut h = new Map<string, string>();
-    h.set("Content-Type", content_type);
-    let mut m = new Map<string, any>();
-    m.set("status", status);
-    m.set("body", body);
-    m.set("headers", h);
-    return m;
-}
-
-fn error_response(status: number, msg: string): any {
-    let mut m = new Map<string, any>();
-    m.set("status", status);
-    m.set("body", msg);
-    m.set("headers", new Map<string, string>());
-    return m;
-}
-
-// Returns a handler that serves files from `root_dir`.
-// Appends index.html for directory requests.
-export fn static_files(own root_dir: string): any {
-    return fn(req: any): any {
-        let method = `${req.method}`;
-        if method != "GET" && method != "HEAD" {
-            return error_response(405, "Method Not Allowed");
-        }
-
-        let safe_path = sanitize_path(`${req.path}`);
-        let mut file_path = root_dir + "/" + safe_path;
-
-        // Serve index.html for directory requests
-        if file_path.endsWith("/") || !file_path.includes(".") {
-            while file_path.endsWith("/") {
-                file_path = file_path.slice(0, file_path.length() - 1);
-            }
-            file_path = file_path + "/index.html";
-        }
-
-        if !file.exists(file_path) {
-            return error_response(404, "Not Found");
-        }
-
-        let ext = path_extension(file_path);
-        let mime = mime_for_ext(ext);
-
-        let content = file.read(file_path);
-        match content {
-            Err(_) => { return error_response(500, "Internal Server Error"); },
-            Ok(body) => {
-                return make_response(200, body, mime);
-            },
-        }
-    };
-}
-
-// Prevent path traversal: strip leading /, normalize ..
-fn sanitize_path(req_path: string): string {
-    let parts = req_path.split("/").filter(fn(p: string): bool { return p != ".." && p != "." && p != ""; });
-    return parts.join("/");
-}
-
-fn path_extension(file_path: string): string {
-    let dot = file_path.lastIndexOf(".");
-    match dot {
-        None => { return ""; },
-        Some(i) => { return file_path.slice(i + 1, file_path.length()).toLowerCase(); },
     }
 }
