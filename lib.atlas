@@ -39,5 +39,9 @@ export { render, render_file, Template } from "./src/template";
 // Static file serving
 export { static_files } from "./src/static";
 
+// HTTP client
+export { ClientResponse, get, post, put, delete, patch,
+         get_json, post_json, HttpClient } from "./src/client";
+
 // HTMX helpers
 export { htmx, HtmxHelpers } from "./src/htmx";
