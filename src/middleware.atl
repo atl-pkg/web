@@ -4,12 +4,6 @@
 // requests and responses. Stack executes left-to-right: the first
 // middleware in the list is the outermost layer.
 //
-// Handler type (intended):  fn(req: Request): any
-// Middleware type (intended): fn(next: Handler): Handler
-//
-// Note: Handler and Middleware are typed as `any` because Atlas does not yet
-// support function type aliases. Track: atlas issue — function type aliases.
-//
 // Usage:
 //   import { chain, logger, cors, json_body } from "web";
 //   http.serve(3000, chain([dev_errors(), logger(), cors("*"), json_body()], dispatch));
@@ -17,8 +11,8 @@
 import { Request, req_header, parse_cookie_header, parse_query_string } from "./request";
 import { response, bad_request, too_many_requests, unauthorized } from "./response";
 
-export type Handler = any;
-export type Middleware = any;
+export type Handler = fn(req: Request): any;
+export type Middleware = fn(next: Handler): Handler;
 
 // Compose a list of middleware around a final handler.
 // Middleware is applied left-to-right (first = outermost / first to run).
@@ -144,7 +138,7 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
 //
 // Note: Basic auth transmits credentials in base64, not encrypted.
 // Always use HTTPS in production.
-export fn basic_auth(validate: any): Middleware {
+export fn basic_auth(validate: fn(username: string, password: string): bool): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             match req_header(req, "authorization") {
