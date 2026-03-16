@@ -72,9 +72,6 @@ fn sanitize_path(req_path: string): string {
 // Extract the file extension from a path (lowercase, without dot).
 // "styles/main.CSS" → "css", "/no-ext" → ""
 fn path_extension(file_path: string): string {
-    // indexOf returns a plain number; -1 means not found (TypeScript parity).
-    // Note: lastIndexOf expected to follow the same convention.
-    // Track: atlas issue — confirm lastIndexOf return type matches indexOf (number/-1).
     let dot = file_path.lastIndexOf(".");
     if dot < 0 {
         return "";

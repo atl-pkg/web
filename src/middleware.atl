@@ -112,8 +112,6 @@ export fn json_body(): Middleware {
 // Allows max_requests within a rolling window_ms millisecond window.
 // Uses X-Forwarded-For when present, falls back to "unknown".
 //
-// Note: Atlas closure capture semantics for `let mut` variables must be
-// verified to ensure counters persist across requests. Track: atlas issue.
 export fn rate_limit(max_requests: number, window_ms: number): Middleware {
     let mut counters    = new Map<string, number>();
     let mut window_start = performance.now();
