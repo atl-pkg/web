@@ -21,27 +21,27 @@ export struct Request {
 // ── field helpers ─────────────────────────────────────────────────────────────
 
 // Case-insensitive header lookup (headers are stored lowercase).
-export fn req_header(req: Request, name: string): Option<string> {
+export function req_header(req: Request, name: string): Option<string> {
     return req.headers.get(name.toLowerCase());
 }
 
 // Query parameter lookup.
-export fn req_query(req: Request, key: string): Option<string> {
+export function req_query(req: Request, key: string): Option<string> {
     return req.query.get(key);
 }
 
 // Cookie value lookup.
-export fn req_cookie(req: Request, name: string): Option<string> {
+export function req_cookie(req: Request, name: string): Option<string> {
     return req.cookies.get(name);
 }
 
 // Return the parsed JSON body, if json_body() middleware has run.
-export fn req_json(req: Request): Option<any> {
+export function req_json(req: Request): Option<any> {
     return req.json;
 }
 
 // Form field lookup (populated by form_body() middleware).
-export fn req_form(req: Request, key: string): Option<string> {
+export function req_form(req: Request, key: string): Option<string> {
     return req.form.get(key);
 }
 
@@ -50,7 +50,7 @@ export fn req_form(req: Request, key: string): Option<string> {
 // Parse a URL query string into a key→value map.
 // "a=1&b=hello&flag" → { "a": "1", "b": "hello", "flag": "" }
 // Duplicate keys: last value wins.
-export fn parse_query_string(qs: string): Map<string, string> {
+export function parse_query_string(qs: string): Map<string, string> {
     let mut m = new Map<string, string>();
     if qs.length() == 0 {
         return m;
@@ -58,7 +58,7 @@ export fn parse_query_string(qs: string): Map<string, string> {
     // Strip leading '?' if present
     let raw = if qs.startsWith("?") { qs.slice(1, qs.length()) } else { qs };
     let pairs = raw.split("&");
-    for pair in pairs {
+    for pair of pairs {
         if pair.length() == 0 {
             continue;
         }
@@ -79,13 +79,13 @@ export fn parse_query_string(qs: string): Map<string, string> {
 
 // Parse a Cookie request header into a name→value map.
 // "session=abc; theme=dark" → { "session": "abc", "theme": "dark" }
-export fn parse_cookie_header(header: string): Map<string, string> {
+export function parse_cookie_header(header: string): Map<string, string> {
     let mut m = new Map<string, string>();
     if header.length() == 0 {
         return m;
     }
     let pairs = header.split(";");
-    for pair in pairs {
+    for pair of pairs {
         let trimmed = pair.trim();
         if trimmed.length() == 0 {
             continue;

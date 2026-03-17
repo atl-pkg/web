@@ -16,7 +16,7 @@ import { Request } from "./request";
 import { response, not_found, internal_error, method_not_allowed } from "./response";
 
 // Returns a handler that serves files from `root_dir`.
-export fn static_files(own root_dir: string): any {
+export function static_files(own root_dir: string): any {
     return fn(req: Request): any {
         if req.method != "GET" && req.method != "HEAD" {
             return method_not_allowed("GET, HEAD");
@@ -62,7 +62,7 @@ export fn static_files(own root_dir: string): any {
 
 // Strip leading '/', normalize ".." and "." path segments to prevent traversal.
 // "/../../etc/passwd" → "etc/passwd"
-fn sanitize_path(req_path: string): string {
+function sanitize_path(req_path: string): string {
     let parts = req_path
         .split("/")
         .filter(fn(p: string): bool { return p != ".." && p != "." && p.length() > 0; });
@@ -71,7 +71,7 @@ fn sanitize_path(req_path: string): string {
 
 // Extract the file extension from a path (lowercase, without dot).
 // "styles/main.CSS" → "css", "/no-ext" → ""
-fn path_extension(file_path: string): string {
+function path_extension(file_path: string): string {
     let dot = file_path.lastIndexOf(".");
     if dot < 0 {
         return "";
@@ -80,7 +80,7 @@ fn path_extension(file_path: string): string {
 }
 
 // Map file extension to MIME type.
-fn mime_for_ext(ext: string): string {
+function mime_for_ext(ext: string): string {
     match ext {
         "html"  => "text/html; charset=utf-8",
         "htm"   => "text/html; charset=utf-8",

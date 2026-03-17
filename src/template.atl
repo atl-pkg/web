@@ -7,33 +7,31 @@
 //   import { render, Template } from 'web';
 //   const html = render("views/index.html", { title: "Home", items: [...] });
 
-export struct Template {
-    source: string,
-    partials: Map<string, string>,
+export class Template {
+    source: string;
+    partials: Map<string, string>;
+
+    function with_partial(name: string, src: string): Template {
+        let updated = this.partials.set(name, src);
+        return new Template { source: this.source, partials: updated };
+    }
+
+    function render(ctx: Map<string, any>): string {
+        return eval_nodes(tokenize(this.source), ctx, this.partials);
+    }
 }
 
 // Render a template string with a context map.
-// Supports: {{ var }}, {{ a.b.c }}, {% for x in list %}...{% end %}, {% if cond %}...{% end %}
-export fn render(source: string, ctx: Map<string, any>): string {
-    let tmpl = Template { source: source, partials: new Map<string, string>() };
+// Supports: {{ var }}, {{ a.b.c }}, {% for x of list %}...{% end %}, {% if cond %}...{% end %}
+export function render(source: string, ctx: Map<string, any>): string {
+    let tmpl = new Template { source: source, partials: new Map<string, string>() };
     return tmpl.render(ctx);
 }
 
 // Render a template file (relative to project root) with context.
-export fn render_file(file_path: string, ctx: Map<string, any>): string {
+export function render_file(file_path: string, ctx: Map<string, any>): string {
     let source = file.read(file_path).unwrapOr("");
     return render(source, ctx);
-}
-
-impl Template {
-    fn with_partial(self, name: string, src: string): Template {
-        let updated = self.partials.set(name, src);
-        return Template { source: self.source, partials: updated };
-    }
-
-    fn render(self, ctx: Map<string, any>): string {
-        return eval_nodes(tokenize(self.source), ctx, self.partials);
-    }
 }
 
 // ── tokenizer ─────────────────────────────────────────────────────────────────
@@ -42,7 +40,7 @@ enum TplToken {
     Text(string),
     Expr(string),        // {{ expression }}   — HTML-escaped output
     RawExpr(string),     // {{{ expression }}} — raw unescaped output
-    ForOpen(string),     // {% for x in list %}
+    ForOpen(string),     // {% for x of list %}
     ForClose,            // {% end %} for a for block
     IfOpen(string),      // {% if condition %}
     ElseBlock,           // {% else %}
@@ -50,9 +48,9 @@ enum TplToken {
     Include(string),     // {% include "partial" %}
 }
 
-// indexOf_from: search for needle in source starting at pos.
+// indexOf_from: search for needle of source starting at pos.
 // Atlas indexOf() returns -1 if not found (NOT Option).
-fn indexOf_from(source: string, needle: string, pos: number): Option<number> {
+function indexOf_from(source: string, needle: string, pos: number): Option<number> {
     let tail = source.slice(pos, source.length());
     let rel = tail.indexOf(needle);
     if rel == -1 {
@@ -61,7 +59,7 @@ fn indexOf_from(source: string, needle: string, pos: number): Option<number> {
     return Some(rel + pos);
 }
 
-fn tokenize(source: string): TplToken[] {
+function tokenize(source: string): TplToken[] {
     let mut tokens: TplToken[] = [];
     let mut pos = 0;
     let len = source.length();
@@ -137,7 +135,7 @@ fn tokenize(source: string): TplToken[] {
     return tokens;
 }
 
-fn parse_block_tag(tag: string): TplToken {
+function parse_block_tag(tag: string): TplToken {
     if tag == "end" {
         return ForClose;
     }
@@ -163,7 +161,7 @@ fn parse_block_tag(tag: string): TplToken {
 
 // html_escape: escape <, >, &, ", ' to prevent XSS in template output.
 // Applied to all {{ expr }} interpolations. Use {{{ expr }}} for raw output.
-fn html_escape(s: string): string {
+function html_escape(s: string): string {
     let mut out = s;
     out = out.replaceAll("&", "&amp;");   // must be first to avoid double-escaping
     out = out.replaceAll("<", "&lt;");
@@ -175,7 +173,7 @@ fn html_escape(s: string): string {
 
 // ── evaluator ─────────────────────────────────────────────────────────────────
 
-fn eval_nodes(tokens: TplToken[], ctx: Map<string, any>, partials: Map<string, string>): string {
+function eval_nodes(tokens: TplToken[], ctx: Map<string, any>, partials: Map<string, string>): string {
     let mut output = "";
     let mut i = 0;
 
@@ -219,7 +217,7 @@ struct EvalResult {
 
 // resolve_expr: supports dot-path traversal for nested maps.
 // {{ user.name }} walks ctx["user"]["name"], returning "" if any step is missing.
-fn resolve_expr(expr: string, ctx: Map<string, any>): string {
+function resolve_expr(expr: string, ctx: Map<string, any>): string {
     let parts = expr.split(".");
     if parts.length() == 1 {
         return ctx.get(expr).unwrapOr("");
@@ -244,7 +242,7 @@ fn resolve_expr(expr: string, ctx: Map<string, any>): string {
     }
 }
 
-fn eval_for(tokens: TplToken[], start: number, spec: string, ctx: Map<string, any>, partials: Map<string, string>): EvalResult {
+function eval_for(tokens: TplToken[], start: number, spec: string, ctx: Map<string, any>, partials: Map<string, string>): EvalResult {
     // Parse "x in list"
     let in_idx = spec.indexOf(" in ");
     if in_idx == -1 {
@@ -275,7 +273,7 @@ fn eval_for(tokens: TplToken[], start: number, spec: string, ctx: Map<string, an
     let list = ctx.get(list_name);
     match list {
         Some(items) => {
-            for item in items {
+            for item of items {
                 let mut item_ctx = ctx;
                 item_ctx = item_ctx.set(var_name, item);
                 output = output + eval_nodes(body, item_ctx, partials);
@@ -287,7 +285,7 @@ fn eval_for(tokens: TplToken[], start: number, spec: string, ctx: Map<string, an
     return EvalResult { output: output, next_pos: i };
 }
 
-fn eval_if(tokens: TplToken[], start: number, cond: string, ctx: Map<string, any>, partials: Map<string, string>): EvalResult {
+function eval_if(tokens: TplToken[], start: number, cond: string, ctx: Map<string, any>, partials: Map<string, string>): EvalResult {
     let mut then_body: TplToken[] = [];
     let mut else_body: TplToken[] = [];
     let mut in_else = false;
@@ -320,7 +318,7 @@ fn eval_if(tokens: TplToken[], start: number, cond: string, ctx: Map<string, any
     return EvalResult { output: output, next_pos: i };
 }
 
-fn eval_condition(cond: string, ctx: Map<string, any>): bool {
+function eval_condition(cond: string, ctx: Map<string, any>): bool {
     // Check if a context variable is truthy: false/0/""/null → false
     let value = ctx.get(cond);
     match value {

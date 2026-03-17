@@ -16,46 +16,42 @@
 import { Request, req_header } from "./request";
 import { response } from "./response";
 
-export struct HtmxHelpers {}
-
-export let htmx = HtmxHelpers {};
-
-impl HtmxHelpers {
+export class HtmxHelpers {
     // Returns true when the request originated from an HTMX fetch.
-    fn is_htmx(self, req: Request): bool {
+    function is_htmx(req: Request): bool {
         return req_header(req, "hx-request").isSome();
     }
 
     // 200 HTML partial response. Use for HTMX-driven fragment swaps.
-    fn partial(self, html_body: string): any {
+    function partial(html_body: string): any {
         let mut h = new Map<string, string>();
         h = h.set("Content-Type", "text/html; charset=utf-8");
         return response(200, html_body, h);
     }
 
     // Client-side redirect via HX-Redirect. HTMX navigates to the URL.
-    fn redirect(self, url: string): any {
+    function redirect(url: string): any {
         let mut h = new Map<string, string>();
         h = h.set("HX-Redirect", url);
         return response(200, "", h);
     }
 
     // Full-page refresh via HX-Refresh.
-    fn refresh(self): any {
+    function refresh(): any {
         let mut h = new Map<string, string>();
         h = h.set("HX-Refresh", "true");
         return response(200, "", h);
     }
 
     // Add HX-Push-Url to an existing response, preserving all its other headers.
-    fn push_url(self, resp: any, url: string): any {
+    function push_url(resp: any, url: string): any {
         let mut h = resp.headers;
         h = h.set("HX-Push-Url", url);
         return response(resp.status, resp.body, h);
     }
 
     // Add HX-Trigger to an existing response, preserving all its other headers.
-    fn trigger(self, resp: any, event_name: string): any {
+    function trigger(resp: any, event_name: string): any {
         let mut h = resp.headers;
         h = h.set("HX-Trigger", event_name);
         return response(resp.status, resp.body, h);
@@ -63,12 +59,14 @@ impl HtmxHelpers {
 
     // Compose an out-of-band swap response: main content + additional OOB fragments.
     // Each fragment should carry hx-swap-oob="true" on its root element.
-    fn oob(self, main: string, fragments: string[]): string {
+    function oob(main: string, fragments: string[]): string {
         return main + "\n" + fragments.join("\n");
     }
 
     // Stop an HTMX polling trigger by responding with HTTP 286.
-    fn stop_polling(self): any {
+    function stop_polling(): any {
         return response(286, "", new Map<string, string>());
     }
 }
+
+export let htmx = new HtmxHelpers {};

@@ -17,7 +17,7 @@
 //   });
 
 // Build a base response map with the canonical shape.
-export fn response(status: number, body: string, headers: Map<string, string>): any {
+export function response(status: number, body: string, headers: Map<string, string>): any {
     let mut m = new Map<string, any>();
     m = m.set("status", status);
     m = m.set("body", body);
@@ -28,19 +28,19 @@ export fn response(status: number, body: string, headers: Map<string, string>): 
 // ── 2xx ───────────────────────────────────────────────────────────────────────
 
 // 200 OK — plain text body.
-export fn ok(body: string): any {
+export function ok(body: string): any {
     return response(200, body, new Map<string, string>());
 }
 
 // 200 OK — HTML content.
-export fn html(body: string): any {
+export function html(body: string): any {
     let mut h = new Map<string, string>();
     h = h.set("Content-Type", "text/html; charset=utf-8");
     return response(200, body, h);
 }
 
 // 200 OK — JSON content. Serializes `data`; returns "null" on stringify failure.
-export fn json_resp(data: any): any {
+export function json_resp(data: any): any {
     let mut h = new Map<string, string>();
     h = h.set("Content-Type", "application/json");
     let body = Json.stringify(data).unwrapOr("null");
@@ -48,31 +48,31 @@ export fn json_resp(data: any): any {
 }
 
 // 200 OK — plain text with explicit Content-Type.
-export fn text(body: string): any {
+export function text(body: string): any {
     let mut h = new Map<string, string>();
     h = h.set("Content-Type", "text/plain; charset=utf-8");
     return response(200, body, h);
 }
 
 // 201 Created — typically used after POST that creates a resource.
-export fn created(body: string): any {
+export function created(body: string): any {
     return response(201, body, new Map<string, string>());
 }
 
 // 202 Accepted — request received, processing not yet complete.
-export fn accepted(body: string): any {
+export function accepted(body: string): any {
     return response(202, body, new Map<string, string>());
 }
 
 // 204 No Content — success with no body (DELETE, PUT with no return value).
-export fn no_content(): any {
+export function no_content(): any {
     return response(204, "", new Map<string, string>());
 }
 
 // ── 3xx ───────────────────────────────────────────────────────────────────────
 
 // 301/302 redirect. Use 301 for permanent, 302 for temporary.
-export fn redirect(url: string, code: number): any {
+export function redirect(url: string, code: number): any {
     let mut h = new Map<string, string>();
     h = h.set("Location", url);
     return response(code, "", h);
@@ -81,51 +81,51 @@ export fn redirect(url: string, code: number): any {
 // ── 4xx ───────────────────────────────────────────────────────────────────────
 
 // 400 Bad Request.
-export fn bad_request(msg: string): any {
+export function bad_request(msg: string): any {
     return response(400, msg, new Map<string, string>());
 }
 
 // 401 Unauthorized. Includes WWW-Authenticate header for basic auth flows.
-export fn unauthorized(realm: string): any {
+export function unauthorized(realm: string): any {
     let mut h = new Map<string, string>();
     h = h.set("WWW-Authenticate", `Basic realm="${realm}"`);
     return response(401, "Unauthorized", h);
 }
 
 // 403 Forbidden.
-export fn forbidden(msg: string): any {
+export function forbidden(msg: string): any {
     return response(403, msg, new Map<string, string>());
 }
 
 // 404 Not Found.
-export fn not_found(): any {
+export function not_found(): any {
     return response(404, "Not Found", new Map<string, string>());
 }
 
 // 405 Method Not Allowed.
-export fn method_not_allowed(allowed: string): any {
+export function method_not_allowed(allowed: string): any {
     let mut h = new Map<string, string>();
     h = h.set("Allow", allowed);
     return response(405, "Method Not Allowed", h);
 }
 
 // 409 Conflict.
-export fn conflict(msg: string): any {
+export function conflict(msg: string): any {
     return response(409, msg, new Map<string, string>());
 }
 
 // 410 Gone.
-export fn gone(): any {
+export function gone(): any {
     return response(410, "Gone", new Map<string, string>());
 }
 
 // 422 Unprocessable Entity — validation failure.
-export fn unprocessable(msg: string): any {
+export function unprocessable(msg: string): any {
     return response(422, msg, new Map<string, string>());
 }
 
 // 429 Too Many Requests.
-export fn too_many_requests(retry_after: number): any {
+export function too_many_requests(retry_after: number): any {
     let mut h = new Map<string, string>();
     h = h.set("Retry-After", retry_after.toString());
     return response(429, "Too Many Requests", h);
@@ -134,12 +134,12 @@ export fn too_many_requests(retry_after: number): any {
 // ── 5xx ───────────────────────────────────────────────────────────────────────
 
 // 500 Internal Server Error.
-export fn internal_error(msg: string): any {
+export function internal_error(msg: string): any {
     return response(500, msg, new Map<string, string>());
 }
 
 // 503 Service Unavailable. Optional retry_after in seconds (0 = omit header).
-export fn service_unavailable(msg: string, retry_after: number): any {
+export function service_unavailable(msg: string, retry_after: number): any {
     if retry_after > 0 {
         let mut h = new Map<string, string>();
         h = h.set("Retry-After", retry_after.toString());
@@ -149,36 +149,36 @@ export fn service_unavailable(msg: string, retry_after: number): any {
 }
 
 // 504 Gateway Timeout.
-export fn gateway_timeout(): any {
+export function gateway_timeout(): any {
     return response(504, "Gateway Timeout", new Map<string, string>());
 }
 
 // ── generic ───────────────────────────────────────────────────────────────────
 
 // Arbitrary status code with a text body and no extra headers.
-export fn status_text(code: number, body: string): any {
+export function status_text(code: number, body: string): any {
     return response(code, body, new Map<string, string>());
 }
 
 // ── header mutation helpers ───────────────────────────────────────────────────
 
 // Return a new response with one header added or overwritten.
-export fn with_header(resp: any, name: string, value: string): any {
+export function with_header(resp: any, name: string, value: string): any {
     let mut h = resp.headers;
     h = h.set(name, value);
     return response(resp.status, resp.body, h);
 }
 
 // Return a new response with the headers map replaced entirely.
-export fn with_headers(resp: any, headers: Map<string, string>): any {
+export function with_headers(resp: any, headers: Map<string, string>): any {
     return response(resp.status, resp.body, headers);
 }
 
 // Merge extra headers into an existing response, preserving existing headers.
 // `extra` values overwrite `resp.headers` on collision.
-export fn merge_headers(resp: any, extra: Map<string, string>): any {
+export function merge_headers(resp: any, extra: Map<string, string>): any {
     let mut h = resp.headers;
-    for entry in extra.entries() {
+    for entry of extra.entries() {
         h = h.set(entry[0], entry[1]);
     }
     return response(resp.status, resp.body, h);
@@ -204,7 +204,7 @@ export struct CookieOptions {
 }
 
 // Default CookieOptions: path="/", session cookie, HttpOnly.
-export fn default_cookie_opts(): CookieOptions {
+export function default_cookie_opts(): CookieOptions {
     return CookieOptions {
         path:      "/",
         domain:    "",
@@ -216,7 +216,7 @@ export fn default_cookie_opts(): CookieOptions {
 }
 
 // Build a Set-Cookie header value string from name, value, and options.
-fn build_set_cookie(name: string, value: string, opts: CookieOptions): string {
+function build_set_cookie(name: string, value: string, opts: CookieOptions): string {
     let mut parts = `${name}=${value}`;
 
     let path = if opts.path.length() > 0 { opts.path } else { "/" };
@@ -248,13 +248,13 @@ fn build_set_cookie(name: string, value: string, opts: CookieOptions): string {
 // Return a new response with a Set-Cookie header appended.
 // If a Set-Cookie header already exists it is overwritten — use
 // set_cookies() (plural) for multiple cookies on the same response.
-export fn set_cookie(resp: any, name: string, value: string, opts: CookieOptions): any {
+export function set_cookie(resp: any, name: string, value: string, opts: CookieOptions): any {
     let cookie_str = build_set_cookie(name, value, opts);
     return with_header(resp, "Set-Cookie", cookie_str);
 }
 
 // Delete a cookie by setting Max-Age=-1 and an empty value.
-export fn delete_cookie(resp: any, name: string, path: string): any {
+export function delete_cookie(resp: any, name: string, path: string): any {
     let opts = CookieOptions {
         path:      if path.length() > 0 { path } else { "/" },
         domain:    "",

@@ -3,7 +3,7 @@
 // Wraps the Atlas stdlib http.* free functions with a higher-level API:
 //   - Simple one-liners: get(), post(), put(), delete(), patch()
 //   - JSON helpers: get_json(), post_json()
-//   - HttpClient struct with base_url, default headers, and timeout
+//   - HttpClient class with base_url, default headers, and timeout
 //   - RequestBuilder for complex requests
 //
 // All functions return Result<ClientResponse, string>.
@@ -25,7 +25,7 @@
 //   }
 //
 //   // HttpClient with shared config:
-//   let client = HttpClient {
+//   let client = new HttpClient {
 //       base_url: "https://api.example.com",
 //       headers:  new Map<string, string>(),
 //       timeout:  30,
@@ -46,7 +46,7 @@ export struct ClientResponse {
 // ── private helper ─────────────────────────────────────────────────────────────
 
 // Convert an HttpResponse to a ClientResponse.
-fn _to_client_resp(raw: any): ClientResponse {
+function _to_client_resp(raw: any): ClientResponse {
     return ClientResponse {
         status:  httpStatus(raw),
         body:    httpBody(raw),
@@ -56,7 +56,7 @@ fn _to_client_resp(raw: any): ClientResponse {
 }
 
 // Send a pre-built HttpRequest and return Result<ClientResponse, string>.
-fn _send(req: any): Result<ClientResponse, string> {
+function _send(req: any): Result<ClientResponse, string> {
     match httpSend(req) {
         Err(e) => { return Err(e); },
         Ok(raw) => { return Ok(_to_client_resp(raw)); },
@@ -66,29 +66,29 @@ fn _send(req: any): Result<ClientResponse, string> {
 // ── Simple free functions ──────────────────────────────────────────────────────
 
 // GET the given URL. Returns Err on network failure.
-export fn get(url: string): Result<ClientResponse, string> {
+export function get(url: string): Result<ClientResponse, string> {
     return _send(httpRequestGet(url));
 }
 
 // POST to the given URL with a string body.
-export fn post(url: string, body: string): Result<ClientResponse, string> {
+export function post(url: string, body: string): Result<ClientResponse, string> {
     return _send(httpRequestPost(url, body));
 }
 
 // PUT to the given URL with a string body.
-export fn put(url: string, body: string): Result<ClientResponse, string> {
+export function put(url: string, body: string): Result<ClientResponse, string> {
     let req = httpRequest("PUT", url);
     let req = httpSetBody(req, body);
     return _send(req);
 }
 
 // DELETE the given URL.
-export fn delete(url: string): Result<ClientResponse, string> {
+export function delete(url: string): Result<ClientResponse, string> {
     return _send(httpRequest("DELETE", url));
 }
 
 // PATCH the given URL with a string body.
-export fn patch(url: string, body: string): Result<ClientResponse, string> {
+export function patch(url: string, body: string): Result<ClientResponse, string> {
     let req = httpRequest("PATCH", url);
     let req = httpSetBody(req, body);
     return _send(req);
@@ -98,7 +98,7 @@ export fn patch(url: string, body: string): Result<ClientResponse, string> {
 
 // GET the URL and parse the response body as JSON.
 // Returns Err if the network call fails or the body is not valid JSON.
-export fn get_json(url: string): Result<any, string> {
+export function get_json(url: string): Result<any, string> {
     let req = httpRequestGet(url);
     let req = httpSetHeader(req, "Accept", "application/json");
     match _send(req) {
@@ -115,7 +115,7 @@ export fn get_json(url: string): Result<any, string> {
 // POST JSON data to the URL and parse the response body as JSON.
 // Serialises `data` to JSON; returns Err if serialisation, network, or
 // response parsing fails.
-export fn post_json(url: string, data: any): Result<any, string> {
+export function post_json(url: string, data: any): Result<any, string> {
     match Json.stringify(data) {
         Err(e) => { return Err("JSON stringify error: " + e); },
         Ok(json_body) => {
@@ -138,80 +138,78 @@ export fn post_json(url: string, data: any): Result<any, string> {
 // ── HttpClient ─────────────────────────────────────────────────────────────────
 
 // Reusable HTTP client with shared base URL, default headers, and timeout.
-export struct HttpClient {
-    base_url: string,
-    headers:  Map<string, string>,
-    timeout:  number,          // seconds; 0 = use default (30s)
-}
+export class HttpClient {
+    base_url: string;
+    headers:  Map<string, string>;
+    timeout:  number;          // seconds; 0 = use default (30s)
 
-impl HttpClient {
     // Return a new HttpClient with the given header added/replaced.
-    fn with_header(borrow self, key: string, value: string): HttpClient {
-        let mut h = self.headers;
+    function with_header(key: string, value: string): HttpClient {
+        let mut h = this.headers;
         h = h.set(key, value);
-        return HttpClient { base_url: self.base_url, headers: h, timeout: self.timeout };
+        return new HttpClient { base_url: this.base_url, headers: h, timeout: this.timeout };
     }
 
     // Build a full URL from the base_url + path.
-    fn _url(borrow self, path: string): string {
-        if self.base_url.length() == 0 {
+    function _url(path: string): string {
+        if this.base_url.length() == 0 {
             return path;
         }
         // Avoid double slashes at the join point
-        if self.base_url.endsWith("/") && path.startsWith("/") {
-            return self.base_url + path.slice(1, path.length());
+        if this.base_url.endsWith("/") && path.startsWith("/") {
+            return this.base_url + path.slice(1, path.length());
         }
-        if !self.base_url.endsWith("/") && !path.startsWith("/") {
-            return self.base_url + "/" + path;
+        if !this.base_url.endsWith("/") && !path.startsWith("/") {
+            return this.base_url + "/" + path;
         }
-        return self.base_url + path;
+        return this.base_url + path;
     }
 
     // Apply default headers and timeout to an HttpRequest.
-    fn _apply(borrow self, req: any): any {
+    function _apply(req: any): any {
         let mut r = req;
-        for entry in self.headers.entries() {
+        for entry of this.headers.entries() {
             r = httpSetHeader(r, entry[0], entry[1]);
         }
-        if self.timeout > 0 {
-            r = httpSetTimeout(r, self.timeout);
+        if this.timeout > 0 {
+            r = httpSetTimeout(r, this.timeout);
         }
         return r;
     }
 
-    fn get(borrow self, path: string): Result<ClientResponse, string> {
-        let req = self._apply(httpRequestGet(self._url(path)));
+    function get(path: string): Result<ClientResponse, string> {
+        let req = this._apply(httpRequestGet(this._url(path)));
         return _send(req);
     }
 
-    fn post(borrow self, path: string, body: string): Result<ClientResponse, string> {
-        let req = self._apply(httpRequestPost(self._url(path), body));
+    function post(path: string, body: string): Result<ClientResponse, string> {
+        let req = this._apply(httpRequestPost(this._url(path), body));
         return _send(req);
     }
 
-    fn put(borrow self, path: string, body: string): Result<ClientResponse, string> {
-        let req = httpRequest("PUT", self._url(path));
+    function put(path: string, body: string): Result<ClientResponse, string> {
+        let req = httpRequest("PUT", this._url(path));
         let req = httpSetBody(req, body);
-        let req = self._apply(req);
+        let req = this._apply(req);
         return _send(req);
     }
 
-    fn delete(borrow self, path: string): Result<ClientResponse, string> {
-        let req = self._apply(httpRequest("DELETE", self._url(path)));
+    function delete(path: string): Result<ClientResponse, string> {
+        let req = this._apply(httpRequest("DELETE", this._url(path)));
         return _send(req);
     }
 
-    fn patch(borrow self, path: string, body: string): Result<ClientResponse, string> {
-        let req = httpRequest("PATCH", self._url(path));
+    function patch(path: string, body: string): Result<ClientResponse, string> {
+        let req = httpRequest("PATCH", this._url(path));
         let req = httpSetBody(req, body);
-        let req = self._apply(req);
+        let req = this._apply(req);
         return _send(req);
     }
 
-    fn get_json(borrow self, path: string): Result<any, string> {
-        let req = httpRequestGet(self._url(path));
+    function get_json(path: string): Result<any, string> {
+        let req = httpRequestGet(this._url(path));
         let req = httpSetHeader(req, "Accept", "application/json");
-        let req = self._apply(req);
+        let req = this._apply(req);
         match _send(req) {
             Err(e) => { return Err(e); },
             Ok(resp) => {
@@ -223,14 +221,14 @@ impl HttpClient {
         }
     }
 
-    fn post_json(borrow self, path: string, data: any): Result<any, string> {
+    function post_json(path: string, data: any): Result<any, string> {
         match Json.stringify(data) {
             Err(e) => { return Err("JSON stringify error: " + e); },
             Ok(json_body) => {
-                let req = httpRequestPost(self._url(path), json_body);
+                let req = httpRequestPost(this._url(path), json_body);
                 let req = httpSetHeader(req, "Content-Type", "application/json");
                 let req = httpSetHeader(req, "Accept", "application/json");
-                let req = self._apply(req);
+                let req = this._apply(req);
                 match _send(req) {
                     Err(e) => { return Err(e); },
                     Ok(resp) => {

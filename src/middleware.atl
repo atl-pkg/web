@@ -16,7 +16,7 @@ export type Middleware = fn(next: Handler): Handler;
 
 // Compose a list of middleware around a final handler.
 // Middleware is applied left-to-right (first = outermost / first to run).
-export fn chain(middleware: Middleware[], handler: Handler): Handler {
+export function chain(middleware: Middleware[], handler: Handler): Handler {
     let mut h = handler;
     let mut i = middleware.length() - 1;
     while i >= 0 {
@@ -29,7 +29,7 @@ export fn chain(middleware: Middleware[], handler: Handler): Handler {
 // ── built-in middleware ───────────────────────────────────────────────────────
 
 // Request/response logger. Prints: METHOD PATH → STATUS
-export fn logger(): Middleware {
+export function logger(): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             let result = next(req);
@@ -43,7 +43,7 @@ export fn logger(): Middleware {
 // Pass "*" to allow all origins or a specific origin string.
 // Handles OPTIONS preflight automatically (responds 204 with CORS headers).
 // Inner handler headers are preserved and CORS headers are merged on top.
-export fn cors(origin: string): Middleware {
+export function cors(origin: string): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             if req.method == "OPTIONS" {
@@ -70,7 +70,7 @@ export fn cors(origin: string): Middleware {
 // If Content-Type is application/json, parses req.body and attaches the
 // parsed value to req.json. Downstream handlers access it via req_json(req).
 // Returns 400 Bad Request if the body is not valid JSON.
-export fn json_body(): Middleware {
+export function json_body(): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             let ct = req_header(req, "content-type").unwrapOr("");
@@ -106,7 +106,7 @@ export fn json_body(): Middleware {
 // Allows max_requests within a rolling window_ms millisecond window.
 // Uses X-Forwarded-For when present, falls back to "unknown".
 //
-export fn rate_limit(max_requests: number, window_ms: number): Middleware {
+export function rate_limit(max_requests: number, window_ms: number): Middleware {
     let mut counters    = new Map<string, number>();
     let mut window_start = performance.now();
 
@@ -138,7 +138,7 @@ export fn rate_limit(max_requests: number, window_ms: number): Middleware {
 //
 // Note: Basic auth transmits credentials in base64, not encrypted.
 // Always use HTTPS in production.
-export fn basic_auth(validate: fn(username: string, password: string): bool): Middleware {
+export function basic_auth(validate: fn(username: string, password: string): bool): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             match req_header(req, "authorization") {
@@ -178,7 +178,7 @@ export fn basic_auth(validate: fn(username: string, password: string): bool): Mi
 //
 // IMPORTANT: place first (outermost) in chain, and remove from production builds.
 //   chain([dev_errors(), logger(), cors("*")], dispatch)
-export fn dev_errors(): Middleware {
+export function dev_errors(): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             let result = next(req);
@@ -196,7 +196,7 @@ export fn dev_errors(): Middleware {
 // Downstream handlers access form fields via req_form(req, "field").
 // Passes through unchanged if Content-Type is not urlencoded.
 // Returns 400 if body is present but malformed beyond empty fields.
-export fn form_body(): Middleware {
+export function form_body(): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             let ct = req_header(req, "content-type").unwrapOr("");
@@ -228,7 +228,7 @@ export fn form_body(): Middleware {
 //
 // Note: Atlas does not yet provide a binary buffer type — file content is
 // exposed as the raw part body string. Track: atlas issue — Buffer/Uint8Array.
-export fn multipart_body(max_size: number): Middleware {
+export function multipart_body(max_size: number): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             let ct = req_header(req, "content-type").unwrapOr("");
@@ -273,7 +273,7 @@ export fn multipart_body(max_size: number): Middleware {
 
 // Extract boundary value from Content-Type header string.
 // "multipart/form-data; boundary=abc123" → Some("abc123")
-fn _extract_boundary(ct: string): Option<string> {
+function _extract_boundary(ct: string): Option<string> {
     let idx = ct.indexOf("boundary=");
     if idx == -1 {
         return None;
@@ -291,14 +291,14 @@ fn _extract_boundary(ct: string): Option<string> {
 // Parse multipart/form-data body into a Map<string, string>.
 // Text fields are stored as-is. File fields are stored with their raw content.
 // Returns Ok(fields) or Err(message).
-fn _parse_multipart(body: string, boundary: string): Result<Map<string, string>, string> {
+function _parse_multipart(body: string, boundary: string): Result<Map<string, string>, string> {
     let mut fields = new Map<string, string>();
     let delimiter = "--" + boundary;
     let end_delimiter = delimiter + "--";
 
     let parts = body.split(delimiter);
 
-    for part in parts {
+    for part of parts {
         // Skip preamble and epilogue
         if part.trim() == "" || part.trim() == "--" || part.startsWith("--") {
             continue;
@@ -334,7 +334,7 @@ fn _parse_multipart(body: string, boundary: string): Result<Map<string, string>,
 
 // Extract the `name` attribute from a Content-Disposition header string.
 // 'Content-Disposition: form-data; name="username"' → Some("username")
-fn _extract_disposition_name(headers: string): Option<string> {
+function _extract_disposition_name(headers: string): Option<string> {
     let name_idx = headers.indexOf("name=\"");
     if name_idx == -1 {
         return None;
@@ -354,7 +354,7 @@ fn _extract_disposition_name(headers: string): Option<string> {
 // monotonically-incremented counter (no UUID library required).
 // The ID is forwarded to the handler via the request headers and echoed back
 // in the response as X-Request-ID.
-export fn request_id(): Middleware {
+export function request_id(): Middleware {
     let mut counter = 0;
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
@@ -395,7 +395,7 @@ export fn request_id(): Middleware {
 // Reject requests whose body exceeds `max_bytes` bytes.
 // Must be placed before body-parsing middleware (json_body, form_body) in chain.
 // Returns 413 Payload Too Large.
-export fn body_limit(max_bytes: number): Middleware {
+export function body_limit(max_bytes: number): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             if req.body.length() > max_bytes {
@@ -415,7 +415,7 @@ export fn body_limit(max_bytes: number): Middleware {
 //   Referrer-Policy: strict-origin-when-cross-origin
 //   Permissions-Policy: geolocation=(), microphone=(), camera=()
 // Pass hsts_max_age > 0 to also emit Strict-Transport-Security.
-export fn security_headers(hsts_max_age: number): Middleware {
+export function security_headers(hsts_max_age: number): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             let result = next(req);
@@ -440,12 +440,12 @@ export fn security_headers(hsts_max_age: number): Middleware {
 //
 // Usage: csrf("session", "my-secret-key")
 // Generate tokens in handlers: crypto.hmac(secret, session_id, "sha256")
-export fn csrf(cookie_name: string, secret: string): Middleware {
+export function csrf(cookie_name: string, secret: string): Middleware {
     return fn(next: Handler): Handler {
         return fn(req: Request): any {
             let safe_methods = ["GET", "HEAD", "OPTIONS", "TRACE"];
             let mut is_safe = false;
-            for m in safe_methods {
+            for m of safe_methods {
                 if req.method == m { is_safe = true; }
             }
             if is_safe {
@@ -471,7 +471,7 @@ export fn csrf(cookie_name: string, secret: string): Middleware {
     };
 }
 
-fn _escape_html(s: string): string {
+function _escape_html(s: string): string {
     // replaceAll required: a single string can contain multiple instances of each char.
     let s1 = s.replaceAll("&", "&amp;");
     let s2 = s1.replaceAll("<", "&lt;");
@@ -480,7 +480,7 @@ fn _escape_html(s: string): string {
     return s4.replaceAll("'", "&#39;");
 }
 
-fn _render_dev_error(req: Request, result: any, is_htmx: bool): any {
+function _render_dev_error(req: Request, result: any, is_htmx: bool): any {
     let error_body   = _escape_html(result.body);
     let escaped_path = _escape_html(req.path);
 

@@ -35,7 +35,7 @@ export struct SessionStore {
 
 // Create a simple in-memory session store backed by a Map.
 // Sessions are lost on process restart — use for development only.
-export fn memory_store(): SessionStore {
+export function memory_store(): SessionStore {
     let mut data = new Map<string, any>();
 
     let get_fn = fn(id: string): Option<any> {
@@ -58,7 +58,7 @@ export fn memory_store(): SessionStore {
 // ── Session cookie options ───────────────────────────────────────────────────
 
 // Sensible defaults for a session cookie.
-export fn default_session_opts(): CookieOptions {
+export function default_session_opts(): CookieOptions {
     return CookieOptions {
         path:      "/",
         domain:    "",
@@ -78,7 +78,7 @@ export fn default_session_opts(): CookieOptions {
 //
 // cookie_name: name of the session ID cookie (e.g. "sid")
 // opts: cookie options for the Set-Cookie header
-export fn session(store: SessionStore, cookie_name: string, opts: CookieOptions): any {
+export function session(store: SessionStore, cookie_name: string, opts: CookieOptions): any {
     return fn(next: any): any {
         return fn(req: Request): any {
             // Load or create session data
@@ -164,7 +164,7 @@ export fn session(store: SessionStore, cookie_name: string, opts: CookieOptions)
 // ── Handler helpers ───────────────────────────────────────────────────────────
 
 // Read the session data map from the request (injected by session middleware).
-export fn req_session(req: Request): Map<string, any> {
+export function req_session(req: Request): Map<string, any> {
     let raw = req.headers.get("x-session-data").unwrapOr("{}");
     match Json.parse(raw) {
         Ok(data) => { return data; },
@@ -178,7 +178,7 @@ export fn req_session(req: Request): Map<string, any> {
 //
 // Note: since Atlas uses CoW semantics, session_set returns a new Request —
 // chain calls: req = session_set(req, "key", val).
-export fn session_set(req: Request, key: string, value: any): Request {
+export function session_set(req: Request, key: string, value: any): Request {
     let mut data = req_session(req);
     data = data.set(key, value);
     let new_json = Json.stringify(data).unwrapOr("{}");
@@ -203,7 +203,7 @@ export fn session_set(req: Request, key: string, value: any): Request {
 // Mark the session for destruction. The session middleware will delete the
 // store entry and send a cookie-clearing Set-Cookie header.
 // Returns a response (not a Request) — call as: return session_destroy(req, resp).
-export fn session_destroy(req: Request, resp: any): any {
+export function session_destroy(req: Request, resp: any): any {
     let mut h = resp.headers;
     h = h.set("x-session-destroyed", "1");
     return response(resp.status, resp.body, h);
@@ -212,6 +212,6 @@ export fn session_destroy(req: Request, resp: any): any {
 // ── private ───────────────────────────────────────────────────────────────────
 
 // Generate a cryptographically random session ID using RFC 4122 v4 UUID.
-fn _generate_sid(): string {
+function _generate_sid(): string {
     return crypto.randomUUID();
 }
