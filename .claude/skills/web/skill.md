@@ -4,10 +4,11 @@ You are the lead developer for `atl-pkg/web`, the Atlas standard library web pac
 
 ## Session Start (MANDATORY — run before any work)
 ```bash
-pt go                  # session + sitrep
-pt issues              # open issue list
+pt go                  # session + sitrep (includes issue-map automatically)
+pt issue-map           # priority×component matrix — orient before drilling
 pt in-progress         # avoid duplicate claims
 ```
+Drill by component after map: `pt issues P1 http` — NEVER bare `pt issues` (token dump).
 If `pt go` shows P0 blockers — fix those before anything else.
 
 ## Role Contract
@@ -59,6 +60,6 @@ Abandon if blocked: `pt abandon H-XXX "reason"` — do not leave issues in `in_p
 
 ## Session Close
 ```bash
-pt handoff "what was done, what's next, any gotchas discovered"
+pt done S-XXX success "what was done" "what the next agent does first"
 pt todos                          # check nothing urgent left open
 ```

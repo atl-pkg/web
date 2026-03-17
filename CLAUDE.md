@@ -9,7 +9,7 @@ Reference: Atlas language spec at `~/dev/projects/atlas/docs/`
 ## Session Start (every agent, every session)
 ```bash
 pt go                  # sitrep: session ID, P0s, handoff, gotchas
-pt issues              # open issues — work from top (P0 first)
+pt issue-map           # priority×component matrix — orient before drilling
 pt in-progress         # what's already claimed — no duplicates
 ```
 `pt issue H-XXX` for full detail. See `.claude/lazy/pt-workflow.md` for complete pt reference.
@@ -55,8 +55,9 @@ map.get("key")
 
 ### Type signatures — always required on named functions
 ```
-fn handler(req: any): any { ... }       // ✅
-fn handler(req) { ... }                 // ❌ return type required
+function handler(req: any): any { ... }    // ✅ — function keyword + return type
+function handler(req) { ... }              // ❌ — return type required
+fn handler(req: any): any { ... }          // ❌ — fn is for closures only (D-072)
 ```
 
 ### Response shape — always a Map

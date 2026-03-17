@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# pt:branch-policy — warn on direct commits to main/master
+_pt_branch_policy() {
+    local branch
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [[ "$branch" == "main" || "$branch" == "master" ]]; then
+        echo ""
+        echo "⚠️  pt: committing directly to ${branch}"
+        echo "   Consider: git checkout -b feat/your-feature"
+        echo "   Override: git commit --no-verify"
+        echo ""
+    fi
+}
+_pt_branch_policy
